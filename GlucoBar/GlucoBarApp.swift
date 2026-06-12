@@ -1,32 +1,35 @@
-//
-//  GlucoBarApp.swift
-//  GlucoBar
-//
-//  Created by Connor Linton on 10/6/2026.
-//
-
 import SwiftUI
-import SwiftData
 
 @main
 struct GlucoBarApp: App {
-    var sharedModelContainer: ModelContainer = {
-        let schema = Schema([
-            Item.self,
-        ])
-        let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
-
-        do {
-            return try ModelContainer(for: schema, configurations: [modelConfiguration])
-        } catch {
-            fatalError("Could not create ModelContainer: \(error)")
-        }
-    }()
+    @StateObject private var service = LibreLinkUpService()
 
     var body: some Scene {
-        WindowGroup {
-            ContentView()
+        MenuBarExtra {
+            MenuContent()
+                .environmentObject(service)
+        } label: {
+            MenuBarLabelView(service: service)
         }
-        .modelContainer(sharedModelContainer)
+        .menuBarExtraStyle(.window)
+
+        Window("Settings", id: "settings") {
+            SettingsView()
+                .environmentObject(service)
+        }
+        .windowResizability(.contentSize)
+        .defaultPosition(.center)
+    }
+}
+
+private struct MenuBarLabelView: View {
+    @ObservedObject var service: LibreLinkUpService
+
+    var body: some View {
+        Text(service.menuBarDisplayText)
+            .id(service.menuBarDisplayText)
+        .font(.system(size: 12, weight: .medium, design: .monospaced))
+        .lineLimit(1)
+        .fixedSize(horizontal: true, vertical: false)
     }
 }
