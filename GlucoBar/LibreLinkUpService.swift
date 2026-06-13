@@ -3,6 +3,7 @@ import Foundation
 import Combine
 import AppKit
 import ServiceManagement
+import Security
 
 @MainActor
 final class LibreLinkUpService: ObservableObject {
@@ -12,18 +13,58 @@ final class LibreLinkUpService: ObservableObject {
         didSet { persistPreferences() }
     }
     @Published var launchAtLoginEnabled: Bool = false
-    @Published var graphRange: GraphRange = .hours4 {
+    @Published var graphWindowHours: Int = 4 {
+        didSet {
+            let clamped = Self.clampedGraphWindowHours(graphWindowHours)
+            if graphWindowHours != clamped {
+                graphWindowHours = clamped
+                return
+            }
+            persistPreferences()
+        }
+    }
+    @Published var showTargetBands: Bool = true {
+        didSet { persistPreferences() }
+    }
+    @Published var lowThresholdEnabled: Bool = true {
+        didSet { persistPreferences() }
+    }
+    @Published var highThresholdEnabled: Bool = true {
+        didSet { persistPreferences() }
+    }
+    @Published var customTargetsEnabled: Bool = false {
+        didSet { persistPreferences() }
+    }
+    @Published var customLowMgDl: Double = 70 {
+        didSet { persistPreferences() }
+    }
+    @Published var customHighMgDl: Double = 180 {
         didSet { persistPreferences() }
     }
     @Published var isLoading: Bool = false
     @Published var isAuthenticated: Bool = false
     @Published var errorMessage: String?
-    @Published var currentReading: GlucoseReading?
+    @Published var currentReading: GlucoseReading? {
+        didSet {
+            guard currentReading?.identityKey != oldValue?.identityKey else { return }
+            triggerReadingUpdateAnimation()
+        }
+    }
     @Published var readingHistory: [GlucoseReading] = []
     @Published var lastUpdated: Date?
+    @Published private(set) var readingUpdateAnimationID = 0
     @Published private(set) var statusTick: Date = .now
 
+    @Published var dataSource: DataSource = .libreLinkUp {
+        didSet { persistPreferences() }
+    }
+    @Published var nightscoutBaseURL: String = "" {
+        didSet { persistPreferences() }
+    }
+    @Published var nightscoutToken: String = ""
+
     private let apiClient: LibreLinkUpAPIClient
+    private let nightscoutAPI = NightscoutAPIClient()
     private var authToken: String?
     private var accountId: String?
     private var selectedConnection: LibreLinkConnection?
@@ -54,17 +95,27 @@ final class LibreLinkUpService: ObservableObject {
         "librelinkup.password",
         "password"
     ]
+    private static let nightscoutTokenKeyCandidates = [
+        "GlucoBarNightscout.token",
+        "Nightscout.token",
+        "nightscout.token",
+        "NS.token",
+        "token"
+    ]
 
     init(apiClient: LibreLinkUpAPIClient? = nil) {
         self.apiClient = apiClient ?? LibreLinkUpAPIClient()
         restorePreferences()
         restoreCachedHistory()
+        loadNightscoutTokenFromKeychain()
         launchAtLoginEnabled = (SMAppService.mainApp.status == .enabled)
         startStatusTimer()
         startRefreshLoop()
 
         if hasStoredCredentials {
             Task { await authenticate() }
+        } else if dataSource == .nightscout, !nightscoutBaseURL.isEmpty {
+            Task { await fetchGlucose() }
         }
     }
 
@@ -74,24 +125,40 @@ final class LibreLinkUpService: ObservableObject {
     }
 
     var hasStoredCredentials: Bool {
-        !email.isEmpty && !password.isEmpty
+        switch dataSource {
+        case .libreLinkUp:
+            return !email.isEmpty && !password.isEmpty
+        case .nightscout:
+            return !nightscoutBaseURL.isEmpty
+        }
     }
 
     var displayUnitLabel: String {
         useMmolPerL ? "mmol/L" : "mg/dL"
     }
 
+    var sourceDisplayName: String {
+        switch dataSource {
+        case .libreLinkUp: return "LibreLinkUp"
+        case .nightscout: return "Nightscout"
+        }
+    }
+
     var graphReadings: [ReadingSample] {
         let sorted = readingHistory.sorted(by: { $0.timestamp < $1.timestamp })
         guard !sorted.isEmpty else { return [] }
 
-        let cutoff = statusTick.addingTimeInterval(-graphRange.windowInterval)
+        let cutoff = statusTick.addingTimeInterval(-graphWindowInterval)
         let filtered = sorted.filter { $0.timestamp >= cutoff }
         if !filtered.isEmpty {
             return filtered
         }
 
         return Array(sorted.suffix(min(sorted.count, 24)))
+    }
+
+    var graphWindowInterval: TimeInterval {
+        TimeInterval(Self.clampedGraphWindowHours(graphWindowHours) * 60 * 60)
     }
 
     var graphBounds: (min: Double, max: Double) {
@@ -132,24 +199,33 @@ final class LibreLinkUpService: ObservableObject {
     }
 
     var targetLowMgDl: Double? {
-        selectedConnection?.targetLow
+        guard showTargetBands, lowThresholdEnabled else { return nil }
+        if customTargetsEnabled || dataSource == .nightscout {
+            return customLowMgDl
+        }
+        return selectedConnection?.targetLow
     }
 
     var targetHighMgDl: Double? {
-        selectedConnection?.targetHigh
+        guard showTargetBands, highThresholdEnabled else { return nil }
+        if customTargetsEnabled || dataSource == .nightscout {
+            return customHighMgDl
+        }
+        return selectedConnection?.targetHigh
     }
 
     var connectionState: ConnectionState {
+        let authenticated = (dataSource == .nightscout && !nightscoutBaseURL.isEmpty) || isAuthenticated
         if let errorMessage {
             return .error(errorMessage)
         }
         if isLoading {
-            return isAuthenticated ? .refreshing : .signingIn
+            return authenticated ? .refreshing : .signingIn
         }
         guard hasStoredCredentials else {
             return .signedOut
         }
-        if !isAuthenticated {
+        if !authenticated {
             return .signingIn
         }
         if isDataStale {
@@ -161,21 +237,15 @@ final class LibreLinkUpService: ObservableObject {
     var statusHeadline: String {
         switch connectionState {
         case .signedOut:
-            return "Sign in to LibreLinkUp"
+            return "Not connected"
         case .signingIn:
-            return "Signing in..."
+            return "Signing in"
         case .refreshing:
-            return "Refreshing glucose data..."
+            return "Refreshing"
         case .connected:
-            if let selectedConnection {
-                return "Connected to \(selectedConnection.displayName)"
-            }
             return "Connected"
         case .stale:
-            if let selectedConnection {
-                return "Connected to \(selectedConnection.displayName)"
-            }
-            return "Data is stale"
+            return "Stale"
         case .error:
             return "Connection problem"
         }
@@ -184,15 +254,15 @@ final class LibreLinkUpService: ObservableObject {
     var statusDetail: String? {
         switch connectionState {
         case .signedOut:
-            return "Open Settings and enter your LibreLinkUp credentials."
+            return sourceDisplayName
         case .signingIn:
-            return "Checking your account and loading the latest glucose data."
+            return sourceDisplayName
         case .refreshing:
-            return "Updating the graph from LibreLinkUp."
+            return sourceDisplayName
         case .connected:
-            return lastUpdatedText
+            return lastUpdatedText ?? sourceDisplayName
         case .stale:
-            return lastUpdatedText ?? "The last reading is older than expected."
+            return lastUpdatedText ?? sourceDisplayName
         case .error(let message):
             return message
         }
@@ -234,32 +304,28 @@ final class LibreLinkUpService: ObservableObject {
     }
 
     var menuStatusText: String {
+        let authenticated = (dataSource == .nightscout && !nightscoutBaseURL.isEmpty) || isAuthenticated
+
         if let errorMessage {
             return errorMessage
         }
 
         if isLoading {
-            if isAuthenticated {
-                return "Refreshing glucose data..."
-            }
-            return hasStoredCredentials ? "Signing in..." : "Open Settings to sign in."
+            return authenticated ? "Refreshing" : "Signing in"
         }
 
         if !hasStoredCredentials {
-            return "Open Settings to sign in."
+            return "Not connected"
         }
 
-        if isAuthenticated {
+        if authenticated {
             if currentReading != nil {
-                if let selectedConnection {
-                    return "Connected to \(selectedConnection.displayName)"
-                }
                 return "Connected"
             }
-            return "Waiting for the first live reading."
+            return "Waiting for data"
         }
 
-        return "Open Settings to sign in."
+        return "Not connected"
     }
 
     var menuStatusColor: Color {
@@ -359,22 +425,42 @@ final class LibreLinkUpService: ObservableObject {
         }
     }
 
-    func authenticate() async {
-        guard hasStoredCredentials else {
-            errorMessage = "Open Settings to sign in."
-            isAuthenticated = false
-            return
-        }
+    func triggerReadingUpdateAnimation() {
+        readingUpdateAnimationID += 1
+    }
 
-        await runRefreshFlow(forceLogin: true)
+    func authenticate() async {
+        switch dataSource {
+        case .libreLinkUp:
+            guard hasStoredCredentials else {
+                errorMessage = "Open Settings to sign in."
+                isAuthenticated = false
+                return
+            }
+            await runRefreshFlow(forceLogin: true)
+        case .nightscout:
+            isAuthenticated = true
+            errorMessage = nil
+            await fetchNightscout()
+        }
     }
 
     func fetchGlucose() async {
-        await runRefreshFlow(forceLogin: false)
+        switch dataSource {
+        case .libreLinkUp:
+            await runRefreshFlow(forceLogin: false)
+        case .nightscout:
+            await fetchNightscout()
+        }
     }
 
     func reconnect() async {
-        await runRefreshFlow(forceLogin: true)
+        switch dataSource {
+        case .libreLinkUp:
+            await runRefreshFlow(forceLogin: true)
+        case .nightscout:
+            await fetchNightscout()
+        }
     }
 
     func setLaunchAtLoginEnabled(_ enabled: Bool) async {
@@ -457,24 +543,52 @@ final class LibreLinkUpService: ObservableObject {
     }
 
     private func restorePreferences() {
-        guard let data = UserDefaults.standard.data(forKey: preferencesKey) else {
-            loadStoredCredentials()
-            return
-        }
-
-        do {
-            let preferences = try JSONDecoder.libreLinkUp.decode(StoredPreferences.self, from: data)
-            useMmolPerL = preferences.useMmolPerL
-            graphRange = preferences.graphRange
-        } catch {
-            // Fall back to defaults if preferences become unreadable.
+        if let data = UserDefaults.standard.data(forKey: preferencesKey) {
+            do {
+                let preferences = try JSONDecoder.libreLinkUp.decode(StoredPreferences.self, from: data)
+                useMmolPerL = preferences.useMmolPerL
+                graphWindowHours = Self.clampedGraphWindowHours(
+                    preferences.graphWindowHours ?? preferences.graphRange?.rawValue ?? graphWindowHours
+                )
+                dataSource = preferences.dataSource ?? .libreLinkUp
+                nightscoutBaseURL = preferences.nightscoutBaseURL ?? ""
+                showTargetBands = preferences.showTargetBands ?? true
+                lowThresholdEnabled = preferences.lowThresholdEnabled ?? true
+                highThresholdEnabled = preferences.highThresholdEnabled ?? true
+                customTargetsEnabled = preferences.customTargetsEnabled ?? false
+                customLowMgDl = preferences.customLowMgDl ?? 70
+                customHighMgDl = preferences.customHighMgDl ?? 180
+                if let token = preferences.nightscoutToken, !token.isEmpty {
+                    nightscoutToken = token
+                    persistNightscoutToken()
+                }
+            } catch {
+                // Fall back to defaults if preferences become unreadable.
+                useMmolPerL = useMmolPerL
+                graphWindowHours = graphWindowHours
+                dataSource = .libreLinkUp
+                nightscoutBaseURL = ""
+            }
         }
 
         loadStoredCredentials()
     }
 
     private func persistPreferences() {
-        let preferences = StoredPreferences(useMmolPerL: useMmolPerL, graphRange: graphRange)
+        let preferences = StoredPreferences(
+            useMmolPerL: useMmolPerL,
+            graphRange: nil,
+            graphWindowHours: graphWindowHours,
+            dataSource: dataSource,
+            nightscoutBaseURL: nightscoutBaseURL.isEmpty ? nil : nightscoutBaseURL,
+            nightscoutToken: nil,
+            showTargetBands: showTargetBands,
+            lowThresholdEnabled: lowThresholdEnabled,
+            highThresholdEnabled: highThresholdEnabled,
+            customTargetsEnabled: customTargetsEnabled,
+            customLowMgDl: customLowMgDl,
+            customHighMgDl: customHighMgDl
+        )
         do {
             let data = try JSONEncoder.libreLinkUp.encode(preferences)
             UserDefaults.standard.set(data, forKey: preferencesKey)
@@ -592,7 +706,8 @@ final class LibreLinkUpService: ObservableObject {
         if errorMessage != nil {
             return ProcessInfo.processInfo.isLowPowerModeEnabled ? 15 * 60 : 5 * 60
         }
-        if !isAuthenticated {
+        // Treat Nightscout as always authenticated when URL is present
+        if dataSource == .nightscout || isAuthenticated == false {
             return 5 * 60
         }
         return ProcessInfo.processInfo.isLowPowerModeEnabled ? 300 : 60
@@ -645,6 +760,76 @@ final class LibreLinkUpService: ObservableObject {
         return trimmed.isEmpty ? Array(sorted.suffix(1)) : trimmed
     }
 
+    private static func clampedGraphWindowHours(_ hours: Int) -> Int {
+        min(max(hours, 1), 24)
+    }
+
+    private func loadNightscoutTokenFromKeychain() {
+        for key in Self.nightscoutTokenKeyCandidates {
+            if let value = KeychainHelper.load(key: key) {
+                nightscoutToken = value
+                break
+            }
+        }
+    }
+
+    private func persistNightscoutToken() {
+        guard !nightscoutToken.isEmpty else { return }
+        KeychainHelper.save(key: Self.nightscoutTokenKeyCandidates[0], value: nightscoutToken)
+    }
+
+    private func fetchNightscout() async {
+        guard !nightscoutBaseURL.isEmpty else {
+            errorMessage = "Open Settings and enter your Nightscout URL."
+            currentReading = nil
+            return
+        }
+
+        isLoading = true
+        defer { isLoading = false }
+
+        do {
+            let sampleInterval: TimeInterval = 5 * 60 // 5 minutes typical NS interval
+            let desiredCount = max(24, Int(graphWindowInterval / sampleInterval) + 12) // pad a bit
+            let entries = try await nightscoutAPI.fetchEntries(
+                baseURL: nightscoutBaseURL,
+                token: nightscoutToken.isEmpty ? nil : nightscoutToken,
+                count: desiredCount
+            )
+            let readings = entries.compactMap { entry -> GlucoseReading? in
+                guard let date = entry.date, let sgv = entry.sgv else { return nil }
+                return GlucoseReading(
+                    timestamp: date,
+                    valueMgDl: sgv,
+                    trendArrow: mapNightscoutDirection(entry.direction),
+                    factoryTimestamp: nil
+                )
+            }
+            readingHistory = Self.trimmedHistory(readings)
+            currentReading = readingHistory.last
+            lastUpdated = currentReading?.timestamp ?? readingHistory.last?.timestamp
+            errorMessage = nil
+            isAuthenticated = true
+            persistGraphCache()
+            persistNightscoutToken()
+        } catch {
+            errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        }
+    }
+
+    private func mapNightscoutDirection(_ direction: String?) -> Int? {
+        guard let d = direction?.lowercased() else { return nil }
+        switch d {
+        case "doubledown": return 1
+        case "singledown": return 1
+        case "fortyfivedown": return 2
+        case "flat": return 3
+        case "fortyfiveup": return 4
+        case "singleup": return 5
+        case "doubleup": return 6
+        default: return nil
+        }
+    }
 }
 
 enum ConnectionState: Equatable {

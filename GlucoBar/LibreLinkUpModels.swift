@@ -20,6 +20,20 @@ enum GraphRange: Int, CaseIterable, Identifiable, Codable, Hashable {
     }
 }
 
+enum DataSource: String, CaseIterable, Identifiable, Codable, Hashable {
+    case libreLinkUp
+    case nightscout
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .libreLinkUp: return "LibreLinkUp"
+        case .nightscout: return "Nightscout"
+        }
+    }
+}
+
 struct GlucoseReading: Identifiable, Codable, Equatable {
     let id: String
     let timestamp: Date
@@ -249,7 +263,17 @@ struct AuthTicket: Decodable {
 
 struct StoredPreferences: Codable {
     let useMmolPerL: Bool
-    let graphRange: GraphRange
+    let graphRange: GraphRange?
+    let graphWindowHours: Int?
+    let dataSource: DataSource?
+    let nightscoutBaseURL: String?
+    let nightscoutToken: String?
+    let showTargetBands: Bool?
+    let lowThresholdEnabled: Bool?
+    let highThresholdEnabled: Bool?
+    let customTargetsEnabled: Bool?
+    let customLowMgDl: Double?
+    let customHighMgDl: Double?
 }
 
 struct GraphCache: Codable {

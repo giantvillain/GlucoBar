@@ -6,136 +6,255 @@ struct SettingsView: View {
     @State private var password = ""
     @State private var launchAtStartup = false
     @State private var useMmolPerL = false
+    @State private var graphWindowHours = 4.0
+    @State private var selectedSource: DataSource = .libreLinkUp
+    @State private var nightscoutBaseURL = ""
+    @State private var nightscoutToken = ""
+    @State private var showTargetBands = true
+    @State private var customTargetsEnabled = false
+    @State private var lowThresholdEnabled = true
+    @State private var highThresholdEnabled = true
+    @State private var customLowThreshold = 70.0
+    @State private var customHighThreshold = 180.0
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 14) {
             header
-            statusCard
-            accountCard
-            preferencesCard
+            statusStrip
+
+            HStack(alignment: .top, spacing: 14) {
+                VStack(alignment: .leading, spacing: 12) {
+                    sourceSection
+                    displaySection
+                }
+                .frame(maxWidth: .infinity, alignment: .top)
+
+                VStack(alignment: .leading, spacing: 12) {
+                    thresholdsSection
+                    startupSection
+                }
+                .frame(maxWidth: .infinity, alignment: .top)
+            }
+
             actionRow
         }
-        .padding(24)
-        .frame(width: 380)
-        .onAppear {
-            email = service.email
-            password = service.password
-            launchAtStartup = service.launchAtLoginEnabled
-            useMmolPerL = service.useMmolPerL
-        }
+        .padding(20)
+        .frame(width: 660, alignment: .topLeading)
+        .onAppear(perform: loadSettings)
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 3) {
             Text("Settings")
                 .font(.title2.weight(.semibold))
-            Text("Connect GlucoBar to your LibreLinkUp account, choose how values are shown, and control whether it starts automatically.")
-                .foregroundStyle(.secondary)
-                .font(.callout)
-                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
-    private var statusCard: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Current Status")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
+    private var statusStrip: some View {
+        HStack(alignment: .center, spacing: 8) {
+            Image(systemName: statusIconName)
+                .foregroundStyle(statusColor)
+                .frame(width: 16)
 
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Image(systemName: statusIconName)
-                    .foregroundStyle(statusColor)
+            Text(statusLine)
+                .font(.callout.weight(.semibold))
+                .lineLimit(1)
 
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(service.statusHeadline)
-                        .font(.headline)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(.quaternary.opacity(0.10))
+        }
+    }
 
-                    if let statusDetail {
-                        Text(statusDetail)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
+    private var sourceSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            SettingsPanel("Data Source") {
+                Picker("Source", selection: $selectedSource) {
+                    ForEach(DataSource.allCases) { source in
+                        Text(source.title).tag(source)
                     }
                 }
-
-                Spacer(minLength: 0)
+                .pickerStyle(.segmented)
+                .onChange(of: selectedSource) { _, newValue in
+                    service.dataSource = newValue
+                    if newValue == .nightscout {
+                        service.customTargetsEnabled = true
+                        customTargetsEnabled = true
+                    }
+                }
             }
-        }
-        .padding(12)
-        .background {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(.quaternary.opacity(0.12))
+
+            if selectedSource == .libreLinkUp {
+                SettingsPanel("LibreLinkUp") {
+                    TextField("Email address", text: $email)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit { connect() }
+
+                    SecureField("Password", text: $password)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit { connect() }
+                }
+            } else {
+                SettingsPanel("Nightscout") {
+                    TextField("Base URL", text: $nightscoutBaseURL)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit { connect() }
+
+                    SecureField("API token", text: $nightscoutToken)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit { connect() }
+                }
+            }
         }
     }
 
-    private var accountCard: some View {
+    private var displaySection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("LibreLinkUp Account")
-                .font(.headline)
+            SettingsPanel("Display") {
+                Toggle("Show values in mmol/L", isOn: $useMmolPerL)
+                    .onChange(of: useMmolPerL) { _, newValue in
+                        service.useMmolPerL = newValue
+                        loadThresholdSettings()
+                    }
 
-            Text("Use the same email and password you use in LibreLinkUp. The password is stored securely in Keychain on this Mac.")
+                Divider()
+
+                HStack(spacing: 10) {
+                    Text("Graph history")
+                        .frame(width: 92, alignment: .leading)
+
+                    Slider(value: $graphWindowHours, in: 1...24, step: 1)
+                        .onChange(of: graphWindowHours) { _, newValue in
+                            service.graphWindowHours = Int(newValue.rounded())
+                        }
+
+                    Text("\(Int(graphWindowHours))h")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                        .frame(width: 30, alignment: .trailing)
+                }
+            }
+        }
+    }
+
+    private var thresholdsSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            SettingsPanel("Threshold Bands") {
+                Toggle("Show threshold bands", isOn: $showTargetBands)
+                    .onChange(of: showTargetBands) { _, newValue in
+                        service.showTargetBands = newValue
+                    }
+
+                if showTargetBands {
+                    if selectedSource == .libreLinkUp {
+                        Toggle("Set thresholds manually", isOn: $customTargetsEnabled)
+                            .onChange(of: customTargetsEnabled) { _, newValue in
+                                service.customTargetsEnabled = newValue
+                                commitThresholdValues()
+                            }
+                    } else {
+                        Label("Nightscout uses manual thresholds.", systemImage: "slider.horizontal.3")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+
+            if showTargetBands {
+                SettingsPanel("Values") {
+                    thresholdRow(
+                        title: "Low",
+                        isEnabled: $lowThresholdEnabled,
+                        value: $customLowThreshold,
+                        range: thresholdRange,
+                        tint: .red
+                    )
+
+                    thresholdRow(
+                        title: "High",
+                        isEnabled: $highThresholdEnabled,
+                        value: $customHighThreshold,
+                        range: thresholdRange,
+                        tint: .orange
+                    )
+
+                    if !thresholdValuesAreEditable {
+                        Label("Using thresholds from LibreLinkUp.", systemImage: "waveform.path.ecg")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    } else {
+                        Label("Using manual thresholds.", systemImage: "slider.horizontal.3")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+            }
+        }
+        .frame(height: 214, alignment: .top)
+    }
+
+    private var startupSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            SettingsPanel("Startup") {
+                Toggle("Open GlucoBar when you log in", isOn: $launchAtStartup)
+                    .onChange(of: launchAtStartup) { _, newValue in
+                        Task { @MainActor in
+                            await service.setLaunchAtLoginEnabled(newValue)
+                            launchAtStartup = service.launchAtLoginEnabled
+                        }
+                    }
+            }
+        }
+    }
+
+    private func thresholdRow(
+        title: String,
+        isEnabled: Binding<Bool>,
+        value: Binding<Double>,
+        range: ClosedRange<Double>,
+        tint: Color
+    ) -> some View {
+        HStack(spacing: 8) {
+            Toggle("", isOn: isEnabled)
+                .toggleStyle(.checkbox)
+                .labelsHidden()
+                .onChange(of: isEnabled.wrappedValue) { _, _ in
+                    commitThresholdValues()
+                }
+
+            Circle()
+                .fill(tint)
+                .frame(width: 8, height: 8)
+
+            Text(title)
+                .frame(width: 36, alignment: .leading)
+
+            TextField(title, value: value, format: thresholdFormat)
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 72)
+                .disabled(!thresholdValuesAreEditable || !isEnabled.wrappedValue)
+                .onSubmit { commitThresholdValues() }
+                .onChange(of: value.wrappedValue) { _, _ in
+                    commitThresholdValues()
+                }
+
+            Stepper(title, value: value, in: range, step: thresholdStep)
+                .labelsHidden()
+                .disabled(!thresholdValuesAreEditable || !isEnabled.wrappedValue)
+
+            Text(thresholdUnitLabel)
                 .font(.caption)
                 .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+                .frame(width: 48, alignment: .leading)
 
-            VStack(spacing: 10) {
-                TextField("Email address", text: $email)
-                    .textFieldStyle(.roundedBorder)
-                    .onSubmit { connect() }
-
-                SecureField("Password", text: $password)
-                    .textFieldStyle(.roundedBorder)
-                    .onSubmit { connect() }
-            }
-        }
-        .padding(12)
-        .background {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(.quaternary.opacity(0.12))
-        }
-    }
-
-    private var preferencesCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Display")
-                .font(.headline)
-
-            Toggle(isOn: $useMmolPerL) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Show values in mmol/L")
-                    Text("Turn this off to display values in mg/dL.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .onChange(of: useMmolPerL) { _, newValue in
-                service.useMmolPerL = newValue
-            }
-
-            Divider()
-
-            Text("Startup")
-                .font(.headline)
-
-            Toggle(isOn: $launchAtStartup) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Open GlucoBar when you log in")
-                    Text("Launch the app automatically after you sign in to macOS.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .onChange(of: launchAtStartup) { _, newValue in
-                Task { @MainActor in
-                    await service.setLaunchAtLoginEnabled(newValue)
-                    launchAtStartup = service.launchAtLoginEnabled
-                }
-            }
-        }
-        .padding(12)
-        .background {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(.quaternary.opacity(0.12))
+            Spacer(minLength: 0)
         }
     }
 
@@ -170,24 +289,135 @@ struct SettingsView: View {
         return .secondary
     }
 
+    private var statusTitle: String {
+        if service.errorMessage != nil {
+            return "Connection problem"
+        }
+        if service.isAuthenticated {
+            return "Connected"
+        }
+        return "Not connected"
+    }
+
     private var statusDetail: String? {
         if let error = service.errorMessage {
             return error
         }
         if service.isAuthenticated {
-            return "Your account is connected and GlucoBar can refresh readings automatically."
+            return service.lastUpdatedText
         }
-        return "Sign in to start showing your current glucose readings."
+        return service.sourceDisplayName
+    }
+
+    private var statusLine: String {
+        if let statusDetail, !statusDetail.isEmpty {
+            return "\(statusTitle) • \(statusDetail)"
+        }
+        return statusTitle
     }
 
     private var canConnect: Bool {
-        !email.isEmpty && !password.isEmpty && !service.isLoading
+        if selectedSource == .libreLinkUp {
+            return !email.isEmpty && !password.isEmpty && !service.isLoading
+        } else {
+            return !nightscoutBaseURL.isEmpty && !service.isLoading
+        }
+    }
+
+    private var thresholdStep: Double {
+        useMmolPerL ? 0.1 : 1
+    }
+
+    private var thresholdRange: ClosedRange<Double> {
+        useMmolPerL ? 2.0...25.0 : 36.0...450.0
+    }
+
+    private var thresholdUnitLabel: String {
+        useMmolPerL ? "mmol/L" : "mg/dL"
+    }
+
+    private var thresholdFormat: FloatingPointFormatStyle<Double> {
+        .number.precision(.fractionLength(useMmolPerL ? 1 : 0))
+    }
+
+    private var thresholdValuesAreEditable: Bool {
+        customTargetsEnabled || selectedSource == .nightscout
+    }
+
+    private func loadSettings() {
+        email = service.email
+        password = service.password
+        launchAtStartup = service.launchAtLoginEnabled
+        useMmolPerL = service.useMmolPerL
+        graphWindowHours = Double(service.graphWindowHours)
+        selectedSource = service.dataSource
+        nightscoutBaseURL = service.nightscoutBaseURL
+        nightscoutToken = service.nightscoutToken
+        loadThresholdSettings()
     }
 
     private func connect() {
         guard canConnect else { return }
-        service.email = email
-        service.password = password
-        Task { await service.authenticate() }
+        service.dataSource = selectedSource
+        if selectedSource == .libreLinkUp {
+            service.email = email
+            service.password = password
+            Task { await service.authenticate() }
+        } else {
+            service.nightscoutBaseURL = nightscoutBaseURL
+            service.nightscoutToken = nightscoutToken
+            Task { await service.fetchGlucose() }
+        }
+    }
+
+    private func loadThresholdSettings() {
+        showTargetBands = service.showTargetBands
+        customTargetsEnabled = service.customTargetsEnabled
+        lowThresholdEnabled = service.lowThresholdEnabled
+        highThresholdEnabled = service.highThresholdEnabled
+        customLowThreshold = displayThreshold(fromMgDl: service.customLowMgDl)
+        customHighThreshold = displayThreshold(fromMgDl: service.customHighMgDl)
+    }
+
+    private func commitThresholdValues() {
+        service.showTargetBands = showTargetBands
+        service.customTargetsEnabled = thresholdValuesAreEditable
+        service.lowThresholdEnabled = lowThresholdEnabled
+        service.highThresholdEnabled = highThresholdEnabled
+        service.customLowMgDl = mgDlThreshold(fromDisplayValue: customLowThreshold)
+        service.customHighMgDl = mgDlThreshold(fromDisplayValue: customHighThreshold)
+    }
+
+    private func displayThreshold(fromMgDl value: Double) -> Double {
+        useMmolPerL ? value / 18.0 : value.rounded()
+    }
+
+    private func mgDlThreshold(fromDisplayValue value: Double) -> Double {
+        useMmolPerL ? value * 18.0 : value
+    }
+}
+
+private struct SettingsPanel<Content: View>: View {
+    let title: String
+    @ViewBuilder let content: Content
+
+    init(_ title: String, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            content
+        }
+        .padding(12)
+        .background {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(.quaternary.opacity(0.10))
+        }
     }
 }
