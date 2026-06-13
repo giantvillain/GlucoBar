@@ -1,3 +1,4 @@
+<img width="1024" height="1024" alt="AppIconDark" src="https://github.com/user-attachments/assets/2433910a-eab6-4762-8fcb-62193135a755" />
 # GlucoBar
 
 A tiny macOS menu bar app that shows your glucose reading. I made it because I got tired of digging through apps to check my blood sugar.
