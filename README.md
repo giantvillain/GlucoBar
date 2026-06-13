@@ -18,23 +18,21 @@ Shows your current glucose reading and trend directly in your menu bar. That's i
 
 ## Quick Start
 
-1. Clone and open `GlucoBar.xcodeproj` in Xcode
-2. Build and run
-3. Enter your LibreLink Up or Nightscout credentials in Settings
-4. Done
+**Option 1: Download a Release**
+1. Go to the [Releases](../../releases) tab
+2. Download the latest `.dmg` file
+3. Drag GlucoBar to your Applications folder
+4. Run and enter your credentials
+
+**Option 2: Build from Source**
+1. Clone this repository
+2. Open `GlucoBar.xcodeproj` in Xcode
+3. Build and run
 
 ## Requirements
 
 - macOS 15.0 or later
 - LibreLink Up account or Nightscout instance
-
-## Settings
-
-- **Data Source**: Choose LibreLink Up or Nightscout
-- **Glucose Units**: Choose mg/dL or mmol/L
-- **Custom Targets**: Set your low and high thresholds
-- **Graph Range**: Adjust from 1-24 hours
-- **Launch at Login**: Auto-start with your Mac
 
 ## License
 
