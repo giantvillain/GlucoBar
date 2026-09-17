@@ -2,7 +2,7 @@ import Foundation
 import AppKit
 
 /// A compact long-term sample: seconds since 1970 and the value in mg/dL.
-struct HistorySample: Codable, Equatable, Sendable {
+nonisolated struct HistorySample: Codable, Equatable, Sendable {
     let t: Int
     let v: Double
 

@@ -1,7 +1,7 @@
 import Foundation
 
 /// A point on the rolling-average line.
-struct AveragedPoint: Identifiable, Equatable {
+nonisolated struct AveragedPoint: Identifiable, Equatable {
     let date: Date
     let valueMgDl: Double
 
@@ -9,8 +9,8 @@ struct AveragedPoint: Identifiable, Equatable {
 }
 
 /// The median and interquartile band of glucose for each slot of the day, built from long-term history.
-struct TypicalDayProfile: Equatable {
-    struct Bin: Equatable {
+nonisolated struct TypicalDayProfile: Equatable, Sendable {
+    struct Bin: Equatable, Sendable {
         let median: Double
         let lower: Double
         let upper: Double
@@ -28,9 +28,14 @@ struct TypicalDayProfile: Equatable {
     /// Values at a given clock time, interpolated between neighbouring bin centres so the overlay
     /// reads as a smooth band rather than steps. Returns nil across gaps with too little history.
     func values(at date: Date, calendar: Calendar = .current) -> Bin? {
-        guard !bins.isEmpty else { return nil }
         let components = calendar.dateComponents([.hour, .minute, .second], from: date)
         let minuteOfDay = Double(components.hour ?? 0) * 60 + Double(components.minute ?? 0) + Double(components.second ?? 0) / 60
+        return values(atMinuteOfDay: minuteOfDay)
+    }
+
+    /// Values at a minute of the day (0 ..< 1440), interpolated between neighbouring bin centres.
+    func values(atMinuteOfDay minuteOfDay: Double) -> Bin? {
+        guard !bins.isEmpty else { return nil }
         let slot = minuteOfDay / Double(binMinutes) - 0.5
         let lowerIndex = Int(floor(slot))
         let fraction = slot - Double(lowerIndex)
@@ -57,7 +62,7 @@ struct TypicalDayProfile: Equatable {
 }
 
 /// Summary statistics for a period of history.
-struct PeriodStats: Equatable {
+nonisolated struct PeriodStats: Equatable {
     let sampleCount: Int
     /// Fraction of the period's five-minute slots that have a reading, 0...1.
     let coverage: Double
@@ -80,7 +85,7 @@ struct PeriodStats: Equatable {
     }
 }
 
-enum GlucoseAnalytics {
+nonisolated enum GlucoseAnalytics {
     /// A trailing moving average of the readings over `window` seconds.
     static func movingAverage(_ readings: [GlucoseReading], window: TimeInterval) -> [AveragedPoint] {
         let sorted = readings.sorted { $0.timestamp < $1.timestamp }

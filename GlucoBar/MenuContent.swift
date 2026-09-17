@@ -228,7 +228,7 @@ struct MenuContent: View {
                 prediction: service.activePrediction,
                 showPredictionBand: service.predictionBandEnabled,
                 rollingAverage: service.rollingAverageSeries,
-                typicalDay: service.typicalDayProfile
+                typicalDay: service.typicalDayOverlayProfile
             )
             .frame(height: 148)
 
@@ -271,7 +271,7 @@ struct MenuContent: View {
 
     private var legendItems: [String] {
         var items: [String] = []
-        if service.typicalDayProfile != nil {
+        if service.typicalDayOverlayProfile != nil {
             items.append("⋯ Typical day")
         }
         if service.rollingAverageEnabled, !service.rollingAverageSeries.isEmpty {

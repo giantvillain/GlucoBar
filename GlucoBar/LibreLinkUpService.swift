@@ -87,6 +87,27 @@ final class LibreLinkUpService: ObservableObject {
         }
     }
 
+    @Published var notifyPredictedLow: Bool = true {
+        didSet {
+            persistPreferences()
+            if notifyPredictedLow { notifier.requestAuthorizationIfNeeded() }
+        }
+    }
+    @Published var notifyPredictedHigh: Bool = false {
+        didSet {
+            persistPreferences()
+            if notifyPredictedHigh { notifier.requestAuthorizationIfNeeded() }
+        }
+    }
+    @Published var notificationCooldownMinutes: Int = 30 {
+        didSet {
+            let clamped = Self.clamp(notificationCooldownMinutes, to: Self.notificationCooldownOptions)
+            if notificationCooldownMinutes != clamped { notificationCooldownMinutes = clamped; return }
+            persistPreferences()
+        }
+    }
+
+    static let notificationCooldownOptions: [Int] = [15, 30, 60]
     static let predictionHorizonOptions: [Int] = [15, 30, 45, 60]
     static let rollingAverageOptions: [Int] = [30, 60, 120]
     static let typicalDayLookbackOptions: [Int] = [7, 14, 30, 60, 90]
@@ -95,8 +116,15 @@ final class LibreLinkUpService: ObservableObject {
 
     let historyStore = GlucoseHistoryStore()
     private let predictor = GlucosePredictor()
+    private let notifier = ForecastNotifier()
     @Published private(set) var prediction: GlucosePrediction?
+    @Published private(set) var backtestResult: ForecastBacktestResult?
+    /// Fraction complete while a backtest runs, nil otherwise.
+    @Published private(set) var backtestProgress: Double?
     private var typicalDayCache: (version: Int, lookback: Int, profile: TypicalDayProfile?)?
+    private var ridgeTrainingTask: Task<Void, Never>?
+    private var ridgeTrainedVersion = -1
+    private var ridgeTrainedAt: Date?
     @Published var lowThresholdEnabled: Bool = true {
         didSet { persistPreferences() }
     }
@@ -185,6 +213,20 @@ final class LibreLinkUpService: ObservableObject {
         launchAtLoginEnabled = (SMAppService.mainApp.status == .enabled)
         startStatusTimer()
         startRefreshLoop()
+
+        if notifyPredictedLow || notifyPredictedHigh {
+            notifier.requestAuthorizationIfNeeded()
+        }
+
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.predictor.saveNow()
+            }
+        }
 
         if hasStoredCredentials {
             Task { await authenticate() }
@@ -441,9 +483,53 @@ final class LibreLinkUpService: ObservableObject {
 
     var forecastLearnedCount: Int { predictor.learnedForecastCount }
 
+    /// Live accuracy over the last seven days, blend first.
+    var forecastAccuracyRows: [GlucosePredictor.AccuracyRow] { predictor.accuracyRows(days: 7) }
+
+    var forecastBandCoverage: [Int: Double] { predictor.bandCoverage(days: 7) }
+
+    /// A short description of the regression's training state, for Settings.
+    var forecastRegressionSummary: String {
+        if let model = predictor.ridgeModel {
+            return "Regression trained on \(model.rowCount) history rows."
+        }
+        return storedHistoryDays >= 3
+            ? "Regression not trained yet."
+            : "Regression needs about three days of history before it trains."
+    }
+
+    /// The current blend, for Settings, such as "trend 40%, history match 25%".
+    var forecastBlendSummary: String? {
+        guard let forecast = activePrediction else { return nil }
+        let parts = forecast.modelWeights
+            .filter { $0.value >= 0.05 }
+            .sorted { $0.value > $1.value }
+            .map { "\(GlucosePredictor.title(forModel: $0.key).lowercased()) \(Int(($0.value * 100).rounded()))%" }
+        guard !parts.isEmpty else { return nil }
+        return "Current blend (\(forecast.regime)): " + parts.joined(separator: ", ") + "."
+    }
+
     func resetForecastLearning() {
         predictor.resetLearning()
         updatePrediction()
+    }
+
+    /// Replays stored history through a fresh predictor in the background.
+    func runBacktest(days: Int = 7) {
+        guard backtestProgress == nil else { return }
+        let samples = historyStore.samples
+        backtestProgress = 0
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let result = ForecastBacktest.run(samples: samples, evaluationDays: days) { fraction in
+                Task { @MainActor [weak self] in
+                    self?.backtestProgress = fraction
+                }
+            }
+            await MainActor.run { [weak self] in
+                self?.backtestResult = result
+                self?.backtestProgress = nil
+            }
+        }
     }
 
     /// Rolling average over the visible window, computed from the full cache so the start of the window is complete.
@@ -454,8 +540,13 @@ final class LibreLinkUpService: ObservableObject {
             .filter { $0.date >= cutoff }
     }
 
+    /// The typical-day profile drawn on the chart, when that overlay is enabled.
+    var typicalDayOverlayProfile: TypicalDayProfile? {
+        typicalDayEnabled ? typicalDayProfile : nil
+    }
+
+    /// The typical-day profile, always available to the forecast regardless of the overlay setting.
     var typicalDayProfile: TypicalDayProfile? {
-        guard typicalDayEnabled else { return nil }
         let lookback = min(typicalDayLookbackDays, historyRetentionDays)
         if let cache = typicalDayCache, cache.version == historyStore.version, cache.lookback == lookback {
             return cache.profile
@@ -506,6 +597,7 @@ final class LibreLinkUpService: ObservableObject {
         historyStore.merge(readingHistory)
         historyStore.prune(retentionDays: historyRetentionDays)
         predictor.learn(from: readingHistory)
+        scheduleRegressionTrainingIfNeeded()
         updatePrediction()
     }
 
@@ -515,7 +607,58 @@ final class LibreLinkUpService: ObservableObject {
             return
         }
         let recent = Array(readingHistory.suffix(120))
-        prediction = predictor.predict(recent: recent, history: historyStore.samples, now: .now)
+        prediction = predictor.predict(
+            recent: recent,
+            history: historyStore.samples,
+            typicalDay: typicalDayProfile,
+            now: .now
+        )
+        evaluateForecastNotifications()
+    }
+
+    /// Retrains the regression in the background at startup and then at most every six hours.
+    private func scheduleRegressionTrainingIfNeeded() {
+        guard predictionEnabled, ridgeTrainingTask == nil else { return }
+        guard historyStore.version != ridgeTrainedVersion else { return }
+        if let trainedAt = ridgeTrainedAt, Date().timeIntervalSince(trainedAt) < 6 * 3600 {
+            return
+        }
+        ridgeTrainedVersion = historyStore.version
+        let samples = historyStore.samples
+        let typical = typicalDayProfile
+        ridgeTrainingTask = Task.detached(priority: .utility) { [weak self] in
+            let model = RidgeForecastModel.train(samples: samples, typical: typical, now: .now)
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                self.ridgeTrainingTask = nil
+                self.ridgeTrainedAt = .now
+                if let model {
+                    self.predictor.ridgeModel = model
+                    self.updatePrediction()
+                }
+            }
+        }
+    }
+
+    private func evaluateForecastNotifications() {
+        guard notifyPredictedLow || notifyPredictedHigh, !isDataStale else { return }
+        guard let forecast = activePrediction,
+              let crossing = forecast.firstCrossing(lowMgDl: effectiveLowMgDl, highMgDl: effectiveHighMgDl)
+        else { return }
+        let threshold = crossing.status == .low ? effectiveLowMgDl : effectiveHighMgDl
+        guard let threshold else { return }
+        notifier.evaluate(
+            event: ForecastNotifier.Event(
+                status: crossing.status,
+                minutes: crossing.minutes,
+                thresholdText: formattedValue(for: threshold),
+                currentText: "\(menuBarValueText) \(menuBarTrendSymbol)",
+                unitLabel: displayUnitLabel
+            ),
+            notifyLow: notifyPredictedLow,
+            notifyHigh: notifyPredictedHigh,
+            cooldown: TimeInterval(notificationCooldownMinutes) * 60
+        )
     }
 
     private static func clamp(_ value: Int, to options: [Int]) -> Int {
@@ -906,6 +1049,9 @@ final class LibreLinkUpService: ObservableObject {
                 trendsEnabled = preferences.trendsEnabled ?? true
                 trendsPeriodDays = preferences.trendsPeriodDays ?? 7
                 historyRetentionDays = preferences.historyRetentionDays ?? 90
+                notifyPredictedLow = preferences.notifyPredictedLow ?? true
+                notifyPredictedHigh = preferences.notifyPredictedHigh ?? false
+                notificationCooldownMinutes = preferences.notificationCooldownMinutes ?? 30
                 if let token = preferences.nightscoutToken, !token.isEmpty {
                     nightscoutToken = token
                     persistNightscoutToken()
@@ -946,7 +1092,10 @@ final class LibreLinkUpService: ObservableObject {
             typicalDayLookbackDays: typicalDayLookbackDays,
             trendsEnabled: trendsEnabled,
             trendsPeriodDays: trendsPeriodDays,
-            historyRetentionDays: historyRetentionDays
+            historyRetentionDays: historyRetentionDays,
+            notifyPredictedLow: notifyPredictedLow,
+            notifyPredictedHigh: notifyPredictedHigh,
+            notificationCooldownMinutes: notificationCooldownMinutes
         )
         do {
             let data = try JSONEncoder.libreLinkUp.encode(preferences)

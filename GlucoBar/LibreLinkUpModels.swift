@@ -55,7 +55,7 @@ enum DataSource: String, CaseIterable, Identifiable, Codable, Hashable {
     }
 }
 
-struct GlucoseReading: Identifiable, Codable, Equatable {
+nonisolated struct GlucoseReading: Identifiable, Codable, Equatable {
     let id: String
     let timestamp: Date
     let valueMgDl: Double
@@ -318,6 +318,9 @@ struct StoredPreferences: Codable {
     let trendsEnabled: Bool?
     let trendsPeriodDays: Int?
     let historyRetentionDays: Int?
+    let notifyPredictedLow: Bool?
+    let notifyPredictedHigh: Bool?
+    let notificationCooldownMinutes: Int?
 }
 
 struct GraphCache: Codable {

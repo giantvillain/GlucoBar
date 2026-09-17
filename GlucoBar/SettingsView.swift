@@ -309,13 +309,134 @@ struct SettingsView: View {
                     }
                     .controlSize(.small)
                 }
+
+                GridRow {
+                    Toggle("Notify on predicted low", isOn: $service.notifyPredictedLow)
+                    Picker("Cooldown", selection: $service.notificationCooldownMinutes) {
+                        ForEach(LibreLinkUpService.notificationCooldownOptions, id: \.self) { minutes in
+                            Text("At most every \(minutes) min").tag(minutes)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 170)
+                    .disabled(!service.notifyPredictedLow && !service.notifyPredictedHigh)
+                    Toggle("Notify on predicted high", isOn: $service.notifyPredictedHigh)
+                }
             }
 
             Text(forecastDescription)
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+
+            forecastAccuracySection
+            backtestSection
         }
+    }
+
+    private struct AccuracyDisplayRow: Identifiable {
+        let title: String
+        let maeByHorizon: [Int: Double]
+        var id: String { title }
+    }
+
+    @ViewBuilder
+    private var forecastAccuracySection: some View {
+        let rows = service.forecastAccuracyRows.map { AccuracyDisplayRow(title: $0.title, maeByHorizon: $0.maeByHorizon) }
+        if !rows.isEmpty {
+            Divider()
+            Text("Forecast accuracy over the last 7 days, mean error in \(service.displayUnitLabel)")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            accuracyTable(rows: rows, coverage: service.forecastBandCoverage)
+        }
+    }
+
+    @ViewBuilder
+    private var backtestSection: some View {
+        Divider()
+        HStack(spacing: 10) {
+            Button("Run backtest on stored history") {
+                service.runBacktest(days: 7)
+            }
+            .controlSize(.small)
+            .disabled(service.backtestProgress != nil || service.storedHistoryDays < 2)
+
+            if let progress = service.backtestProgress {
+                ProgressView(value: progress)
+                    .frame(width: 120)
+                Text("\(Int((progress * 100).rounded()))%")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            } else if service.storedHistoryDays < 2 {
+                Text("Needs at least two days of stored history.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("Replays the last week of history through a fresh forecaster, retraining daily on only what was known at the time.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+
+        if let result = service.backtestResult {
+            Text("Backtest over the last \(result.evaluationDays) days, \(result.forecastCount) forecasts, mean error in \(service.displayUnitLabel)")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            accuracyTable(
+                rows: result.rows.map { AccuracyDisplayRow(title: $0.title, maeByHorizon: $0.maeByHorizon) },
+                coverage: result.bandCoverageByHorizon
+            )
+        }
+    }
+
+    private func accuracyTable(rows: [AccuracyDisplayRow], coverage: [Int: Double]) -> some View {
+        Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 4) {
+            GridRow {
+                Text("Model")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                accuracyHeader(15)
+                accuracyHeader(30)
+                accuracyHeader(60)
+            }
+            ForEach(rows) { row in
+                GridRow {
+                    Text(row.title)
+                        .font(.caption)
+                        .fontWeight(row.title.hasPrefix("Forecast") ? .semibold : .regular)
+                    accuracyCell(row.maeByHorizon[15].map { service.formattedValue(for: $0) })
+                    accuracyCell(row.maeByHorizon[30].map { service.formattedValue(for: $0) })
+                    accuracyCell(row.maeByHorizon[60].map { service.formattedValue(for: $0) })
+                }
+            }
+            if !coverage.isEmpty {
+                GridRow {
+                    Text("Band coverage")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    accuracyCell(coverage[15].map { "\(Int(($0 * 100).rounded()))%" })
+                    accuracyCell(coverage[30].map { "\(Int(($0 * 100).rounded()))%" })
+                    accuracyCell(coverage[60].map { "\(Int(($0 * 100).rounded()))%" })
+                }
+            }
+        }
+    }
+
+    private func accuracyHeader(_ minutes: Int) -> some View {
+        Text("\(minutes) min")
+            .font(.caption2)
+            .foregroundStyle(.tertiary)
+            .gridColumnAlignment(.trailing)
+    }
+
+    private func accuracyCell(_ text: String?) -> some View {
+        Text(text ?? "—")
+            .font(.caption)
+            .monospacedDigit()
+            .gridColumnAlignment(.trailing)
     }
 
     private var forecastDescription: String {
@@ -323,7 +444,11 @@ struct SettingsView: View {
         let learning = learned == 0
             ? "It has not scored any forecasts yet."
             : "It has scored \(learned) forecasts against real readings so far."
-        return "The forecast blends a short-term trend fit, a momentum fit and matches against your own history, and it learns which to trust by checking every forecast against what actually happened. \(learning) Forecasts are estimates, not medical advice."
+        var text = "The forecast blends a trend fit, a momentum fit, the sensor's trend arrow, matches against your own history, a regression trained on that history and your typical-day drift. It scores every forecast against what actually happened, learns each model's error and bias by regime, and adapts the blend and the band. \(learning) \(service.forecastRegressionSummary)"
+        if let blend = service.forecastBlendSummary {
+            text += " \(blend)"
+        }
+        return text + " Forecasts are estimates, not medical advice."
     }
 
     private func thresholdRow(
