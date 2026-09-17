@@ -3,13 +3,20 @@ import CryptoKit
 
 final class LibreLinkUpAPIClient {
     private let session: URLSession
-    private let apiBaseURL = URL(string: "https://api.libreview.io")!
+    private static let defaultBaseURL = URL(string: "https://api.libreview.io")!
+    /// LibreLinkUp may redirect an account to a regional host (for example api-eu.libreview.io).
+    /// Once known, the regional host is used for every later request.
+    private var apiBaseURL = LibreLinkUpAPIClient.defaultBaseURL
 
     init(session: URLSession = .shared) {
         self.session = session
     }
 
     func authenticate(email: String, password: String) async throws -> LoginSession {
+        try await authenticate(email: email, password: password, followingRedirect: true)
+    }
+
+    private func authenticate(email: String, password: String, followingRedirect: Bool) async throws -> LoginSession {
         let loginURL = Self.url(baseURL: apiBaseURL, path: "llu/auth/login")
         var request = URLRequest(url: loginURL)
         request.httpMethod = "POST"
@@ -23,6 +30,17 @@ final class LibreLinkUpAPIClient {
 
         if let minimumVersion = response.minimumVersion {
             throw LibreLinkUpError.minimumVersion(minimumVersion)
+        }
+
+        if let region = response.redirectRegion?.lowercased(), !region.isEmpty {
+            guard followingRedirect,
+                  region.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "-" }),
+                  let regionalURL = URL(string: "https://api-\(region).libreview.io")
+            else {
+                throw LibreLinkUpError.invalidResponse
+            }
+            apiBaseURL = regionalURL
+            return try await authenticate(email: email, password: password, followingRedirect: false)
         }
 
         guard let token = response.data?.authTicket?.token, !token.isEmpty else {

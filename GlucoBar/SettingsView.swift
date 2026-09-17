@@ -7,6 +7,7 @@ struct SettingsView: View {
     @State private var launchAtStartup = false
     @State private var useMmolPerL = false
     @State private var graphWindowHours = 4.0
+    @State private var graphAxisMode: GraphAxisMode = .fixed
     @State private var selectedSource: DataSource = .libreLinkUp
     @State private var nightscoutBaseURL = ""
     @State private var nightscoutToken = ""
@@ -36,11 +37,23 @@ struct SettingsView: View {
                 .frame(maxWidth: .infinity, alignment: .top)
             }
 
+            insightsSection
+
             actionRow
         }
         .padding(20)
         .frame(width: 660, alignment: .topLeading)
         .onAppear(perform: loadSettings)
+        .onChange(of: service.graphWindowHours) { _, newValue in
+            if Int(graphWindowHours.rounded()) != newValue {
+                graphWindowHours = Double(newValue)
+            }
+        }
+        .onChange(of: service.graphAxisMode) { _, newValue in
+            if graphAxisMode != newValue {
+                graphAxisMode = newValue
+            }
+        }
     }
 
     private var header: some View {
@@ -138,6 +151,29 @@ struct SettingsView: View {
                         .monospacedDigit()
                         .frame(width: 30, alignment: .trailing)
                 }
+
+                Divider()
+
+                HStack(spacing: 10) {
+                    Text("Graph scale")
+                        .frame(width: 92, alignment: .leading)
+
+                    Picker("Graph scale", selection: $graphAxisMode) {
+                        ForEach(GraphAxisMode.allCases) { mode in
+                            Text(mode.title).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .onChange(of: graphAxisMode) { _, newValue in
+                        service.graphAxisMode = newValue
+                    }
+                }
+
+                Text(graphAxisDescription)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
@@ -212,6 +248,82 @@ struct SettingsView: View {
                     }
             }
         }
+    }
+
+    private var insightsSection: some View {
+        SettingsPanel("Insights") {
+            Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 8) {
+                GridRow {
+                    Toggle("Show forecast", isOn: $service.predictionEnabled)
+                    Picker("Horizon", selection: $service.predictionHorizonMinutes) {
+                        ForEach(LibreLinkUpService.predictionHorizonOptions, id: \.self) { minutes in
+                            Text("\(minutes) min").tag(minutes)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 96)
+                    .disabled(!service.predictionEnabled)
+                    Toggle("Uncertainty band", isOn: $service.predictionBandEnabled)
+                        .disabled(!service.predictionEnabled)
+                }
+
+                GridRow {
+                    Toggle("Show rolling average", isOn: $service.rollingAverageEnabled)
+                    Picker("Average window", selection: $service.rollingAverageMinutes) {
+                        ForEach(LibreLinkUpService.rollingAverageOptions, id: \.self) { minutes in
+                            Text(minutes % 60 == 0 ? "\(minutes / 60) h" : "\(minutes) min").tag(minutes)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 96)
+                    .disabled(!service.rollingAverageEnabled)
+                    Color.clear.frame(height: 1)
+                }
+
+                GridRow {
+                    Toggle("Show typical day", isOn: $service.typicalDayEnabled)
+                    Picker("Lookback", selection: $service.typicalDayLookbackDays) {
+                        ForEach(LibreLinkUpService.typicalDayLookbackOptions.filter { $0 <= service.historyRetentionDays }, id: \.self) { days in
+                            Text("\(days) days").tag(days)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 96)
+                    .disabled(!service.typicalDayEnabled)
+                    Text(service.storedHistoryDays == 0 ? "No history stored yet" : "\(service.storedHistoryDays) days of history stored")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                GridRow {
+                    Toggle("Show trends in menu", isOn: $service.trendsEnabled)
+                    Picker("Keep history", selection: $service.historyRetentionDays) {
+                        ForEach(LibreLinkUpService.historyRetentionOptions, id: \.self) { days in
+                            Text("Keep \(days) days").tag(days)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 120)
+                    Button("Reset forecast learning") {
+                        service.resetForecastLearning()
+                    }
+                    .controlSize(.small)
+                }
+            }
+
+            Text(forecastDescription)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var forecastDescription: String {
+        let learned = service.forecastLearnedCount
+        let learning = learned == 0
+            ? "It has not scored any forecasts yet."
+            : "It has scored \(learned) forecasts against real readings so far."
+        return "The forecast blends a short-term trend fit, a momentum fit and matches against your own history, and it learns which to trust by checking every forecast against what actually happened. \(learning) Forecasts are estimates, not medical advice."
     }
 
     private func thresholdRow(
@@ -324,6 +436,17 @@ struct SettingsView: View {
         }
     }
 
+    private var graphAxisDescription: String {
+        switch graphAxisMode {
+        case .fixed:
+            return useMmolPerL
+                ? "Always shows 0–20 mmol/L so the graph looks the same every time."
+                : "Always shows 0–400 mg/dL so the graph looks the same every time."
+        case .auto:
+            return "Zooms the axis to your readings and thresholds for the selected window."
+        }
+    }
+
     private var thresholdStep: Double {
         useMmolPerL ? 0.1 : 1
     }
@@ -350,6 +473,7 @@ struct SettingsView: View {
         launchAtStartup = service.launchAtLoginEnabled
         useMmolPerL = service.useMmolPerL
         graphWindowHours = Double(service.graphWindowHours)
+        graphAxisMode = service.graphAxisMode
         selectedSource = service.dataSource
         nightscoutBaseURL = service.nightscoutBaseURL
         nightscoutToken = service.nightscoutToken

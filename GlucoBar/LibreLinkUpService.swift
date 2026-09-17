@@ -26,6 +26,77 @@ final class LibreLinkUpService: ObservableObject {
     @Published var showTargetBands: Bool = true {
         didSet { persistPreferences() }
     }
+    @Published var graphAxisMode: GraphAxisMode = .fixed {
+        didSet { persistPreferences() }
+    }
+
+    // MARK: Insight preferences
+
+    @Published var predictionEnabled: Bool = true {
+        didSet { persistPreferences(); updatePrediction() }
+    }
+    @Published var predictionHorizonMinutes: Int = 30 {
+        didSet {
+            let clamped = Self.clamp(predictionHorizonMinutes, to: Self.predictionHorizonOptions)
+            if predictionHorizonMinutes != clamped { predictionHorizonMinutes = clamped; return }
+            persistPreferences()
+        }
+    }
+    @Published var predictionBandEnabled: Bool = true {
+        didSet { persistPreferences() }
+    }
+    @Published var rollingAverageEnabled: Bool = true {
+        didSet { persistPreferences() }
+    }
+    @Published var rollingAverageMinutes: Int = 60 {
+        didSet {
+            let clamped = Self.clamp(rollingAverageMinutes, to: Self.rollingAverageOptions)
+            if rollingAverageMinutes != clamped { rollingAverageMinutes = clamped; return }
+            persistPreferences()
+        }
+    }
+    @Published var typicalDayEnabled: Bool = true {
+        didSet { persistPreferences() }
+    }
+    @Published var typicalDayLookbackDays: Int = 30 {
+        didSet {
+            let clamped = Self.clamp(typicalDayLookbackDays, to: Self.typicalDayLookbackOptions)
+            if typicalDayLookbackDays != clamped { typicalDayLookbackDays = clamped; return }
+            persistPreferences()
+        }
+    }
+    @Published var trendsEnabled: Bool = true {
+        didSet { persistPreferences() }
+    }
+    @Published var trendsPeriodDays: Int = 7 {
+        didSet {
+            let clamped = Self.clamp(trendsPeriodDays, to: Self.trendsPeriodOptions)
+            if trendsPeriodDays != clamped { trendsPeriodDays = clamped; return }
+            persistPreferences()
+        }
+    }
+    @Published var historyRetentionDays: Int = 90 {
+        didSet {
+            let clamped = Self.clamp(historyRetentionDays, to: Self.historyRetentionOptions)
+            if historyRetentionDays != clamped { historyRetentionDays = clamped; return }
+            persistPreferences()
+            historyStore.prune(retentionDays: historyRetentionDays)
+            if typicalDayLookbackDays > historyRetentionDays {
+                typicalDayLookbackDays = historyRetentionDays
+            }
+        }
+    }
+
+    static let predictionHorizonOptions: [Int] = [15, 30, 45, 60]
+    static let rollingAverageOptions: [Int] = [30, 60, 120]
+    static let typicalDayLookbackOptions: [Int] = [7, 14, 30, 60, 90]
+    static let trendsPeriodOptions: [Int] = [0, 7, 14, 30, 90]
+    static let historyRetentionOptions: [Int] = [30, 60, 90]
+
+    let historyStore = GlucoseHistoryStore()
+    private let predictor = GlucosePredictor()
+    @Published private(set) var prediction: GlucosePrediction?
+    private var typicalDayCache: (version: Int, lookback: Int, profile: TypicalDayProfile?)?
     @Published var lowThresholdEnabled: Bool = true {
         didSet { persistPreferences() }
     }
@@ -50,7 +121,9 @@ final class LibreLinkUpService: ObservableObject {
             triggerReadingUpdateAnimation()
         }
     }
-    @Published var readingHistory: [GlucoseReading] = []
+    @Published var readingHistory: [GlucoseReading] = [] {
+        didSet { historyDidChange() }
+    }
     @Published var lastUpdated: Date?
     @Published private(set) var readingUpdateAnimationID = 0
     @Published private(set) var statusTick: Date = .now
@@ -73,7 +146,8 @@ final class LibreLinkUpService: ObservableObject {
 
     private let preferencesKey = "GlucoBarLibreLinkUpPreferences"
     private static let graphCacheKey = "GlucoBarLibreLinkUpGraphCache"
-    private static let cachedHistoryWindow: TimeInterval = 12 * 60 * 60
+    private static let cachedHistoryWindow: TimeInterval = 24 * 60 * 60
+    static let graphWindowPresets: [Int] = [3, 6, 12, 24]
     private static let timeFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.locale = .current
@@ -162,7 +236,16 @@ final class LibreLinkUpService: ObservableObject {
     }
 
     var graphBounds: (min: Double, max: Double) {
-        fixedGraphBounds
+        switch graphAxisMode {
+        case .fixed:
+            return fixedGraphBounds
+        case .auto:
+            return autoGraphBounds
+        }
+    }
+
+    var graphWindowLabel: String {
+        "Last \(Self.clampedGraphWindowHours(graphWindowHours))h"
     }
 
     var graphYAxisLabels: (top: String, middle: String, bottom: String) {
@@ -199,19 +282,246 @@ final class LibreLinkUpService: ObservableObject {
     }
 
     var targetLowMgDl: Double? {
-        guard showTargetBands, lowThresholdEnabled else { return nil }
+        guard showTargetBands else { return nil }
+        return effectiveLowMgDl
+    }
+
+    var targetHighMgDl: Double? {
+        guard showTargetBands else { return nil }
+        return effectiveHighMgDl
+    }
+
+    /// Low threshold used for range colouring, independent of whether bands are drawn.
+    var effectiveLowMgDl: Double? {
+        guard lowThresholdEnabled else { return nil }
         if customTargetsEnabled || dataSource == .nightscout {
             return customLowMgDl
         }
         return selectedConnection?.targetLow
     }
 
-    var targetHighMgDl: Double? {
-        guard showTargetBands, highThresholdEnabled else { return nil }
+    /// High threshold used for range colouring, independent of whether bands are drawn.
+    var effectiveHighMgDl: Double? {
+        guard highThresholdEnabled else { return nil }
         if customTargetsEnabled || dataSource == .nightscout {
             return customHighMgDl
         }
         return selectedConnection?.targetHigh
+    }
+
+    var hasAnyThreshold: Bool {
+        effectiveLowMgDl != nil || effectiveHighMgDl != nil
+    }
+
+    func rangeStatus(for valueMgDl: Double) -> GlucoseRangeStatus {
+        let low = effectiveLowMgDl
+        let high = effectiveHighMgDl
+        guard low != nil || high != nil else { return .unknown }
+        if let low, valueMgDl < low { return .low }
+        if let high, valueMgDl > high { return .high }
+        return .inRange
+    }
+
+    func rangeColor(for status: GlucoseRangeStatus) -> Color {
+        switch status {
+        case .low: return Self.lowColor
+        case .inRange: return Self.inRangeColor
+        case .high: return Self.highColor
+        case .unknown: return .accentColor
+        }
+    }
+
+    static let inRangeColor = Color(red: 0x34 / 255.0, green: 0xC7 / 255.0, blue: 0x59 / 255.0)
+    static let highColor = Color(red: 0xFF / 255.0, green: 0x95 / 255.0, blue: 0x00 / 255.0)
+    static let lowColor = Color(red: 0xFF / 255.0, green: 0x3B / 255.0, blue: 0x30 / 255.0)
+
+    var currentRangeStatus: GlucoseRangeStatus {
+        guard let reading = currentReading else { return .unknown }
+        return rangeStatus(for: reading.valueMgDl)
+    }
+
+    /// Colour for the headline value: range status when data is fresh, otherwise the connection state.
+    var headlineColor: Color {
+        if errorMessage != nil { return .red }
+        if isDataStale { return .orange }
+        return rangeColor(for: currentRangeStatus)
+    }
+
+    /// The reading used as the baseline for the delta shown next to the current value.
+    /// Prefers the most recent reading at least five minutes older than the current one so that
+    /// one-minute LibreLinkUp samples do not produce a meaningless delta.
+    var deltaBaselineReading: GlucoseReading? {
+        guard let current = currentReading else { return nil }
+        let sorted = readingHistory
+            .filter { $0.timestamp < current.timestamp }
+            .sorted(by: { $0.timestamp < $1.timestamp })
+        guard !sorted.isEmpty else { return nil }
+
+        let minimumGap: TimeInterval = 5 * 60
+        let maximumGap: TimeInterval = 20 * 60
+        if let candidate = sorted.last(where: { current.timestamp.timeIntervalSince($0.timestamp) >= minimumGap }),
+           current.timestamp.timeIntervalSince(candidate.timestamp) <= maximumGap {
+            return candidate
+        }
+        if let last = sorted.last, current.timestamp.timeIntervalSince(last.timestamp) <= maximumGap {
+            return last
+        }
+        return nil
+    }
+
+    var deltaText: String? {
+        guard let current = currentReading, let baseline = deltaBaselineReading else { return nil }
+        let diffMgDl = current.valueMgDl - baseline.valueMgDl
+        let magnitude = formattedValue(for: abs(diffMgDl))
+        // Decide "no change" from the digits actually shown, so "+0" or "+0.0" can never appear.
+        let isZero = (Double(magnitude) ?? 0) == 0
+        if isZero {
+            return "±\(magnitude)"
+        }
+        return diffMgDl > 0 ? "+\(magnitude)" : "−\(magnitude)"
+    }
+
+    var deltaIntervalText: String? {
+        guard let current = currentReading, let baseline = deltaBaselineReading else { return nil }
+        let minutes = max(1, Int((current.timestamp.timeIntervalSince(baseline.timestamp) / 60).rounded()))
+        return "\(minutes)m"
+    }
+
+    struct WindowStats {
+        let timeInRangePercent: Int?
+        let lowMgDl: Double
+        let highMgDl: Double
+        let averageMgDl: Double
+    }
+
+    var windowStats: WindowStats? {
+        let readings = graphReadings
+        guard !readings.isEmpty else { return nil }
+        let values = readings.map(\.valueMgDl)
+        let low = values.min() ?? 0
+        let high = values.max() ?? 0
+        let average = values.reduce(0, +) / Double(values.count)
+
+        var timeInRange: Int?
+        if hasAnyThreshold {
+            let inRange = values.filter { rangeStatus(for: $0) == .inRange }.count
+            timeInRange = Int((Double(inRange) / Double(values.count) * 100).rounded())
+        }
+        return WindowStats(timeInRangePercent: timeInRange, lowMgDl: low, highMgDl: high, averageMgDl: average)
+    }
+
+    // MARK: - Insights
+
+    /// The forecast to draw: only while the latest reading is fresh, trimmed to the chosen horizon.
+    var activePrediction: GlucosePrediction? {
+        guard predictionEnabled, let prediction, currentReading != nil else { return nil }
+        guard statusTick.timeIntervalSince(prediction.madeAt) <= 12 * 60 else { return nil }
+        return prediction.trimmed(toMinutes: predictionHorizonMinutes)
+    }
+
+    struct PredictionSummary {
+        let text: String
+        let status: GlucoseRangeStatus
+    }
+
+    /// One line for the popover, such as "Low in ~20 min" or "~6.8 in 30m".
+    var predictionSummary: PredictionSummary? {
+        guard let forecast = activePrediction else { return nil }
+        if let crossing = forecast.firstCrossing(lowMgDl: effectiveLowMgDl, highMgDl: effectiveHighMgDl) {
+            let word = crossing.status == .low ? "Low" : "High"
+            return PredictionSummary(text: "\(word) in ~\(crossing.minutes) min", status: crossing.status)
+        }
+        guard let point = forecast.points.last else { return nil }
+        let minutes = Int((point.date.timeIntervalSince(forecast.madeAt) / 60).rounded())
+        return PredictionSummary(
+            text: "~\(formattedValue(for: point.valueMgDl)) in \(minutes)m",
+            status: rangeStatus(for: point.valueMgDl)
+        )
+    }
+
+    var forecastLearnedCount: Int { predictor.learnedForecastCount }
+
+    func resetForecastLearning() {
+        predictor.resetLearning()
+        updatePrediction()
+    }
+
+    /// Rolling average over the visible window, computed from the full cache so the start of the window is complete.
+    var rollingAverageSeries: [AveragedPoint] {
+        guard rollingAverageEnabled else { return [] }
+        let cutoff = statusTick.addingTimeInterval(-graphWindowInterval)
+        return GlucoseAnalytics.movingAverage(readingHistory, window: TimeInterval(rollingAverageMinutes) * 60)
+            .filter { $0.date >= cutoff }
+    }
+
+    var typicalDayProfile: TypicalDayProfile? {
+        guard typicalDayEnabled else { return nil }
+        let lookback = min(typicalDayLookbackDays, historyRetentionDays)
+        if let cache = typicalDayCache, cache.version == historyStore.version, cache.lookback == lookback {
+            return cache.profile
+        }
+        let since = statusTick.addingTimeInterval(-TimeInterval(lookback) * 86_400)
+        let profile = GlucoseAnalytics.typicalDay(samples: historyStore.samples(since: since))
+        typicalDayCache = (historyStore.version, lookback, profile)
+        return profile
+    }
+
+    /// Number of distinct days with stored history, for Settings.
+    var storedHistoryDays: Int {
+        guard let earliest = historyStore.earliestDate else { return 0 }
+        return max(1, Int((statusTick.timeIntervalSince(earliest) / 86_400).rounded(.up)))
+    }
+
+    func periodStats(days: Int) -> PeriodStats? {
+        let start: Date
+        if days <= 0 {
+            start = Calendar.current.startOfDay(for: statusTick)
+        } else {
+            start = statusTick.addingTimeInterval(-TimeInterval(days) * 86_400)
+        }
+        return GlucoseAnalytics.periodStats(
+            samples: historyStore.samples(since: start),
+            from: start,
+            to: statusTick,
+            lowMgDl: effectiveLowMgDl,
+            highMgDl: effectiveHighMgDl
+        )
+    }
+
+    static func periodTitle(days: Int) -> String {
+        days <= 0 ? "Today" : "\(days)d"
+    }
+
+    /// Explains a partially filled window, for example when LibreLinkUp only returned 12 of 24 hours.
+    var graphCoverageText: String? {
+        guard let first = graphReadings.first else { return nil }
+        let loadedHours = statusTick.timeIntervalSince(first.timestamp) / 3600
+        let windowHours = Double(Self.clampedGraphWindowHours(graphWindowHours))
+        guard windowHours - loadedHours > 0.75 else { return nil }
+        let shown = max(1, Int(loadedHours.rounded()))
+        return "\(shown)h of \(Int(windowHours))h loaded · history fills in while GlucoBar runs"
+    }
+
+    private func historyDidChange() {
+        historyStore.merge(readingHistory)
+        historyStore.prune(retentionDays: historyRetentionDays)
+        predictor.learn(from: readingHistory)
+        updatePrediction()
+    }
+
+    private func updatePrediction() {
+        guard predictionEnabled, !readingHistory.isEmpty else {
+            prediction = nil
+            return
+        }
+        let recent = Array(readingHistory.suffix(120))
+        prediction = predictor.predict(recent: recent, history: historyStore.samples, now: .now)
+    }
+
+    private static func clamp(_ value: Int, to options: [Int]) -> Int {
+        guard !options.isEmpty else { return value }
+        if options.contains(value) { return value }
+        return options.min(by: { abs($0 - value) < abs($1 - value) }) ?? value
     }
 
     var connectionState: ConnectionState {
@@ -334,6 +644,19 @@ final class LibreLinkUpService: ObservableObject {
         if isDataStale { return .orange }
         if isAuthenticated { return .secondary }
         return .secondary
+    }
+
+    /// Colour of the small dot in the menu bar: red on error, orange when stale, otherwise the range status.
+    var menuBarIndicatorColor: Color {
+        if errorMessage != nil { return .red }
+        if isDataStale { return .orange }
+        guard currentReading != nil else { return .secondary }
+        switch currentRangeStatus {
+        case .low: return Self.lowColor
+        case .high: return Self.highColor
+        case .inRange: return Self.inRangeColor
+        case .unknown: return .secondary
+        }
     }
 
     var menuBarValueText: String {
@@ -495,7 +818,7 @@ final class LibreLinkUpService: ObservableObject {
                 accountId = session.accountId
             }
 
-            try await refreshConnectionData(retryAfterRelogin: true)
+            try await refreshConnectionData(retryAfterRelogin: !forceLogin)
             isAuthenticated = true
             errorMessage = nil
             persistCredentials()
@@ -507,7 +830,20 @@ final class LibreLinkUpService: ObservableObject {
         }
     }
 
+    /// Fetches connections and graph data. When the stored session token has expired, signs in
+    /// again once and retries, so an expired token recovers without the user pressing Reconnect.
     private func refreshConnectionData(retryAfterRelogin: Bool) async throws {
+        do {
+            try await performConnectionRefresh()
+        } catch where retryAfterRelogin && isAuthenticationError(error) {
+            let session = try await apiClient.authenticate(email: email, password: password)
+            authToken = session.authToken
+            accountId = session.accountId
+            try await performConnectionRefresh()
+        }
+    }
+
+    private func performConnectionRefresh() async throws {
         guard let authToken, let accountId else {
             throw LibreLinkUpError.missingCredentials
         }
@@ -535,7 +871,8 @@ final class LibreLinkUpService: ObservableObject {
 
         let graphReadings = graph.graphReadings.sorted(by: { $0.timestamp < $1.timestamp })
         let connectionReading = graph.data.connection?.currentReading ?? connection.currentReading
-        let merged = Self.merge(readings: graphReadings, with: connectionReading)
+        // Keep what was already cached so the history grows past the 12 hours the API returns.
+        let merged = Self.merge(readings: readingHistory + graphReadings, with: connectionReading)
 
         readingHistory = Self.trimmedHistory(merged)
         currentReading = readingHistory.last
@@ -558,6 +895,17 @@ final class LibreLinkUpService: ObservableObject {
                 customTargetsEnabled = preferences.customTargetsEnabled ?? false
                 customLowMgDl = preferences.customLowMgDl ?? 70
                 customHighMgDl = preferences.customHighMgDl ?? 180
+                graphAxisMode = preferences.graphAxisMode ?? .fixed
+                predictionEnabled = preferences.predictionEnabled ?? true
+                predictionHorizonMinutes = preferences.predictionHorizonMinutes ?? 30
+                predictionBandEnabled = preferences.predictionBandEnabled ?? true
+                rollingAverageEnabled = preferences.rollingAverageEnabled ?? true
+                rollingAverageMinutes = preferences.rollingAverageMinutes ?? 60
+                typicalDayEnabled = preferences.typicalDayEnabled ?? true
+                typicalDayLookbackDays = preferences.typicalDayLookbackDays ?? 30
+                trendsEnabled = preferences.trendsEnabled ?? true
+                trendsPeriodDays = preferences.trendsPeriodDays ?? 7
+                historyRetentionDays = preferences.historyRetentionDays ?? 90
                 if let token = preferences.nightscoutToken, !token.isEmpty {
                     nightscoutToken = token
                     persistNightscoutToken()
@@ -587,7 +935,18 @@ final class LibreLinkUpService: ObservableObject {
             highThresholdEnabled: highThresholdEnabled,
             customTargetsEnabled: customTargetsEnabled,
             customLowMgDl: customLowMgDl,
-            customHighMgDl: customHighMgDl
+            customHighMgDl: customHighMgDl,
+            graphAxisMode: graphAxisMode,
+            predictionEnabled: predictionEnabled,
+            predictionHorizonMinutes: predictionHorizonMinutes,
+            predictionBandEnabled: predictionBandEnabled,
+            rollingAverageEnabled: rollingAverageEnabled,
+            rollingAverageMinutes: rollingAverageMinutes,
+            typicalDayEnabled: typicalDayEnabled,
+            typicalDayLookbackDays: typicalDayLookbackDays,
+            trendsEnabled: trendsEnabled,
+            trendsPeriodDays: trendsPeriodDays,
+            historyRetentionDays: historyRetentionDays
         )
         do {
             let data = try JSONEncoder.libreLinkUp.encode(preferences)
@@ -735,7 +1094,32 @@ final class LibreLinkUpService: ObservableObject {
         if useMmolPerL {
             return (0, 20 * 18.0)
         }
-        return (0, 200)
+        return (0, 400)
+    }
+
+    /// Bounds that fit the visible readings and thresholds, rounded outward to tidy values.
+    private var autoGraphBounds: (min: Double, max: Double) {
+        let values = graphReadings.map(\.valueMgDl)
+        var low = values.min() ?? (useMmolPerL ? 4 * 18.0 : 70)
+        var high = values.max() ?? (useMmolPerL ? 10 * 18.0 : 180)
+
+        if let target = effectiveLowMgDl { low = min(low, target) }
+        if let target = effectiveHighMgDl { high = max(high, target) }
+
+        let step = useMmolPerL ? 18.0 : 20.0
+        let padding = useMmolPerL ? 1.0 * 18.0 : 20.0
+        let floorLimit = useMmolPerL ? 2.0 * 18.0 : 40.0
+        let minimumSpan = useMmolPerL ? 8.0 * 18.0 : 140.0
+
+        var minValue = max(floorLimit, floor((low - padding) / step) * step)
+        var maxValue = ceil((high + padding) / step) * step
+        if maxValue - minValue < minimumSpan {
+            maxValue = minValue + minimumSpan
+        }
+        if minValue >= maxValue {
+            minValue = max(0, maxValue - minimumSpan)
+        }
+        return (minValue, maxValue)
     }
 
     private static func merge(readings: [GlucoseReading], with current: GlucoseReading?) -> [GlucoseReading] {
@@ -744,9 +1128,15 @@ final class LibreLinkUpService: ObservableObject {
             merged.append(current)
         }
 
-        var unique: [String: GlucoseReading] = [:]
+        // One reading per timestamp. The live connection reading carries a trend arrow while graph
+        // points usually do not, so prefer the entry that has one when both describe the same minute.
+        var unique: [Int: GlucoseReading] = [:]
         for reading in merged {
-            unique[reading.identityKey] = reading
+            let key = Int(reading.timestamp.timeIntervalSince1970)
+            if let existing = unique[key], existing.trendArrow != nil, reading.trendArrow == nil {
+                continue
+            }
+            unique[key] = reading
         }
         return unique.values.sorted(by: { $0.timestamp < $1.timestamp })
     }
@@ -805,7 +1195,7 @@ final class LibreLinkUpService: ObservableObject {
                     factoryTimestamp: nil
                 )
             }
-            readingHistory = Self.trimmedHistory(readings)
+            readingHistory = Self.trimmedHistory(Self.merge(readings: readingHistory + readings, with: nil))
             currentReading = readingHistory.last
             lastUpdated = currentReading?.timestamp ?? readingHistory.last?.timestamp
             errorMessage = nil

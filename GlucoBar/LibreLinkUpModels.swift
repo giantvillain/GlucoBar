@@ -20,6 +20,27 @@ enum GraphRange: Int, CaseIterable, Identifiable, Codable, Hashable {
     }
 }
 
+enum GraphAxisMode: String, CaseIterable, Identifiable, Codable, Hashable {
+    case fixed
+    case auto
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .fixed: return "Fixed"
+        case .auto: return "Fit to data"
+        }
+    }
+}
+
+enum GlucoseRangeStatus: Equatable {
+    case low
+    case inRange
+    case high
+    case unknown
+}
+
 enum DataSource: String, CaseIterable, Identifiable, Codable, Hashable {
     case libreLinkUp
     case nightscout
@@ -225,6 +246,8 @@ struct LoginResponse: Decodable {
     let status: Int
     let data: LoginData?
     let minimumVersion: String?
+    /// Set when LibreLinkUp asks the client to repeat the login against a regional API host.
+    let redirectRegion: String?
 
     private enum CodingKeys: String, CodingKey {
         case status
@@ -236,8 +259,12 @@ struct LoginResponse: Decodable {
         status = try container.decode(Int.self, forKey: .status)
 
         var resolvedMinimumVersion: String?
+        var resolvedRedirectRegion: String?
         if let loginData = try? container.decode(LoginData.self, forKey: .data) {
             data = loginData
+        } else if let redirect = try? container.decode(LoginRedirect.self, forKey: .data), redirect.redirect == true {
+            data = nil
+            resolvedRedirectRegion = redirect.region
         } else if let versionHint = try? container.decode(VersionHint.self, forKey: .data) {
             data = nil
             resolvedMinimumVersion = versionHint.minimumVersion
@@ -245,7 +272,13 @@ struct LoginResponse: Decodable {
             data = nil
         }
         minimumVersion = resolvedMinimumVersion
+        redirectRegion = resolvedRedirectRegion
     }
+}
+
+struct LoginRedirect: Decodable {
+    let redirect: Bool?
+    let region: String?
 }
 
 struct LoginData: Decodable {
@@ -274,6 +307,17 @@ struct StoredPreferences: Codable {
     let customTargetsEnabled: Bool?
     let customLowMgDl: Double?
     let customHighMgDl: Double?
+    let graphAxisMode: GraphAxisMode?
+    let predictionEnabled: Bool?
+    let predictionHorizonMinutes: Int?
+    let predictionBandEnabled: Bool?
+    let rollingAverageEnabled: Bool?
+    let rollingAverageMinutes: Int?
+    let typicalDayEnabled: Bool?
+    let typicalDayLookbackDays: Int?
+    let trendsEnabled: Bool?
+    let trendsPeriodDays: Int?
+    let historyRetentionDays: Int?
 }
 
 struct GraphCache: Codable {
@@ -375,21 +419,26 @@ private extension KeyedDecodingContainer {
 }
 
 private enum LibreLinkUpDates {
-    static func parse(_ string: String) -> Date? {
-        let formats = [
-            "M/d/yyyy h:mm:ss a",
-            "MM/dd/yyyy h:mm:ss a",
-            "M/d/yyyy h:mm a",
-            "yyyy-MM-dd HH:mm:ss",
-            "yyyy-MM-dd'T'HH:mm:ss.SSSXXXXX",
-            "yyyy-MM-dd'T'HH:mm:ssXXXXX"
-        ]
+    private static let formats = [
+        "M/d/yyyy h:mm:ss a",
+        "MM/dd/yyyy h:mm:ss a",
+        "M/d/yyyy h:mm a",
+        "yyyy-MM-dd HH:mm:ss",
+        "yyyy-MM-dd'T'HH:mm:ss.SSSXXXXX",
+        "yyyy-MM-dd'T'HH:mm:ssXXXXX"
+    ]
 
-        for format in formats {
-            let formatter = DateFormatter()
-            formatter.locale = Locale(identifier: "en_US_POSIX")
-            formatter.timeZone = .current
-            formatter.dateFormat = format
+    /// Formatters are expensive to build, so they are created once and reused across every reading.
+    private static let formatters: [DateFormatter] = formats.map { format in
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = .current
+        formatter.dateFormat = format
+        return formatter
+    }
+
+    static func parse(_ string: String) -> Date? {
+        for formatter in formatters {
             if let date = formatter.date(from: string) {
                 return date
             }

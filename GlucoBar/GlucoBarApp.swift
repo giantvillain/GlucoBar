@@ -28,7 +28,7 @@ private struct MenuBarLabelView: View {
     var body: some View {
         HStack(spacing: 4) {
             Circle()
-                .fill(service.errorMessage != nil ? Color.red : (service.isDataStale ? Color.orange : Color.secondary))
+                .fill(service.menuBarIndicatorColor)
                 .frame(width: 6, height: 6)
             Text(service.menuBarDisplayText)
                 .id(service.menuBarDisplayText)

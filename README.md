@@ -11,8 +11,11 @@ It sits in your menu bar and shows your current glucose + a little trend arrow. 
 ## Features
 
 - Shows glucose in your menu bar
-- Color indicator (green = good, orange = old data, red = error)
-- Little graph showing your readings over time
+- Color indicator (green = in range, red = low, orange = high or old data)
+- Graph of your readings with a 3h / 6h / 12h / 24h window, hover to scrub
+- Forecast for the next 15–60 minutes that learns from your own history (an estimate, not medical advice)
+- Rolling average line and a "typical day" band built from up to 90 days of history
+- Trends: time in range, average, variability and GMI for today, 7, 14, 30 or 90 days
 - Works with LibreLink Up or Nightscout
 - Can display mg/dL or mmol/L
 - Stores your login safely in Keychain
