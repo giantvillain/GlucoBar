@@ -3,17 +3,8 @@ import AppKit
 
 @main
 struct GlucoBarApp: App {
-    @StateObject private var service: LibreLinkUpService
-
-    init() {
-        #if DEBUG
-        let demo = ProcessInfo.processInfo.arguments.contains("--demo")
-        if demo { NSApplication.shared.setActivationPolicy(.regular) }
-        _service = StateObject(wrappedValue: demo ? LibreLinkUpService.preview() : LibreLinkUpService())
-        #else
-        _service = StateObject(wrappedValue: LibreLinkUpService())
-        #endif
-    }
+    @NSApplicationDelegateAdaptor(GlucoBarAppDelegate.self) private var appDelegate
+    private var service: LibreLinkUpService { appDelegate.service }
 
     var body: some Scene {
         #if GLUCOBAR_PREVIEW
@@ -27,34 +18,22 @@ struct GlucoBarApp: App {
                 .frame(minWidth: 950, minHeight: 720)
             }
         #else
-        appScenes
+        Settings { EmptyView() }
+            .commands {
+                CommandGroup(replacing: .appSettings) {
+                    Button("Settings…") { appDelegate.menuBar?.showSettings() }
+                        .keyboardShortcut(",", modifiers: .command)
+                }
+                CommandGroup(after: .appSettings) {
+                    Button("Show Glucose") { appDelegate.menuBar?.showPanel() }
+                        .keyboardShortcut("g", modifiers: [.command, .shift])
+                }
+            }
         #endif
-    }
-
-    @SceneBuilder private var appScenes: some Scene {
-        MenuBarExtra {
-            MenuContent()
-                .environmentObject(service)
-        } label: {
-            MenuBarLabelView(service: service)
-        }
-        .menuBarExtraStyle(.window)
-
-        Window("Glucose History", id: "history") {
-            HistoryView().environmentObject(service)
-        }
-        .defaultSize(width: 920, height: 650)
-
-        Window("Settings", id: "settings") {
-            SettingsView()
-                .environmentObject(service)
-        }
-        .windowResizability(.contentSize)
-        .defaultPosition(.center)
     }
 }
 
-private struct MenuBarLabelView: View {
+struct MenuBarLabelView: View {
     @ObservedObject var service: LibreLinkUpService
 
     var body: some View {

@@ -29,6 +29,7 @@ Enjoy!
 Settings is organised into Connection, Appearance, Alerts, Advanced and Data. Appearance and alert preferences save immediately; account changes take effect when you choose **Connect**. Accounts with multiple LibreLinkUp connections require an explicit person selection.
 
 - **History** opens a separate, resizable window with date navigation, 3–72 hour zoom, comparisons with the preceding period, and a dedicated typical-day chart.
+- The menu panel stays open while you use Settings or History. Click the menu-bar item again, press Escape in the panel, or switch to another app to dismiss it.
 - **Privacy mode** hides readings in the menu bar and app windows and removes glucose values from new notifications. Menu-bar delta, reading age and compact spacing are optional.
 - Unknown trends display `?`. Nightscout’s rapid rise and fall retain their double arrows. Graphs leave gaps when readings are more than 10 minutes apart.
 - Connections refresh after wake and network recovery. Failed requests retry with increasing delays; the menu shows connection problems separately from delayed sensor readings.
@@ -40,7 +41,7 @@ Credentials live in Keychain. Glucose history is saved locally in five-minute bi
 
 The Data tab exports CSV with UTC timestamps and both mg/dL and mmol/L columns. It can delete the active profile’s history and learning, or forget saved credentials. New readings are collected again after deleting history; forgetting credentials disconnects the app and retains history.
 
-History from older versions has no recorded account/person identity. It stays unassigned until you explicitly import it into a selected profile, export it, or delete it. It is never automatically mixed with new profile history.
+History from older versions has no recorded account/person identity. It is restored once when at least 12 overlapping five-minute samples spanning an hour match the active profile, along with the cached graph and saved forecast learning. Existing profile readings and more extensively trained learning are preserved, and the original data stays available as a backup. If the readings cannot be matched, the Data tab offers an explicit import, export or deletion. Switching profiles or deleting imported history never triggers another automatic import.
 
 Advanced settings show mean forecast error and the number of checks at each horizon, plus detected crossings, missed crossings, false warnings and mean warning lead time. Crossing counts describe overlapping forecast windows beginning in range, not independent events or actual notification deliveries; windows with missing data are excluded. These are estimates and retrospective measurements, not clinical validation.
 

@@ -12,8 +12,8 @@ final class GlucoseForecastEngine {
     private var trainedVersion = -1
     private var trainedAt: Date?
 
-    func select(learningKey: String?) {
-        predictor.saveNow()
+    func select(learningKey: String?, savingCurrent: Bool = true) {
+        if savingCurrent { predictor.saveNow() }
         trainingTask?.cancel()
         backtestTask?.cancel()
         trainingTask = nil

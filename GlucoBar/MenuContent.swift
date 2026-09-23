@@ -3,7 +3,8 @@ import AppKit
 
 struct MenuContent: View {
     @EnvironmentObject var service: LibreLinkUpService
-    @Environment(\.openWindow) private var openWindow
+    var openSettings: () -> Void = {}
+    var openHistory: () -> Void = {}
     @AppStorage("GlucoBarTrendsExpanded") private var trendsExpanded = false
 
     var body: some View {
@@ -534,10 +535,7 @@ struct MenuContent: View {
 
     private var footerRow: some View {
         HStack(spacing: 0) {
-            Button {
-                openWindow(id: "settings")
-                NSApp.activate(ignoringOtherApps: true)
-            } label: {
+            Button(action: openSettings) {
                 Label("Settings", systemImage: "gearshape")
             }
             .keyboardShortcut(",", modifiers: .command)
@@ -545,10 +543,7 @@ struct MenuContent: View {
 
             Spacer(minLength: 0)
 
-            Button {
-                openWindow(id: "history")
-                NSApp.activate(ignoringOtherApps: true)
-            } label: { Label("History", systemImage: "chart.xyaxis.line") }
+            Button(action: openHistory) { Label("History", systemImage: "chart.xyaxis.line") }
             .help("Open larger graph, comparisons and typical day")
 
             Spacer(minLength: 0)

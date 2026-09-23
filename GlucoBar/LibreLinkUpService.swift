@@ -620,6 +620,7 @@ final class LibreLinkUpService: ObservableObject {
     private func historyDidChange() {
         guard !restoring, !switchingProfile, historyRepository.profileID != nil else { return }
         historyStore.merge(readingHistory)
+        if !historyRepository.legacyWasImported { migrateLegacyHistory(onlyIfMatching: true) }
         historyStore.prune(retentionDays: historyRetentionDays)
         predictor.learn(from: readingHistory)
         forecastEngine.evaluation.learn(readings: readingHistory, now: .now)
@@ -1254,6 +1255,7 @@ final class LibreLinkUpService: ObservableObject {
         readingHistory = Self.trimmedHistory(cached)
         currentReading = readingHistory.last
         lastUpdated = currentReading?.timestamp
+        if id != nil { migrateLegacyHistory(onlyIfMatching: true) }
         historyStore.prune(retentionDays: historyRetentionDays)
     }
 
@@ -1390,17 +1392,35 @@ final class LibreLinkUpService: ObservableObject {
     }
 
     var hasLegacyHistory: Bool { !restoring && !GlucoseHistoryRepository.legacySamples.isEmpty }
+    var legacyHistoryWasImported: Bool { historyRepository.legacyWasImported }
 
     func importLegacyHistory() {
-        guard hasActiveProfile else { return }
-        let samples = GlucoseHistoryRepository.legacySamples
-        historyStore.merge(samples.map { GlucoseReading(timestamp: $0.date, valueMgDl: $0.v) })
-        historyStore.prune(retentionDays: historyRetentionDays)
-        historyStore.saveNow()
-        resetForecastLearning()
-        typicalDayCache = nil
-        objectWillChange.send()
-        dataMessage = "Older history copied into the selected profile. The unassigned copy remains until you delete it."
+        migrateLegacyHistory(onlyIfMatching: false)
+    }
+
+    private func migrateLegacyHistory(onlyIfMatching: Bool) {
+        guard hasActiveProfile, !onlyIfMatching || !historyRepository.legacyWasImported else { return }
+        do {
+            predictor.saveNow()
+            guard try historyRepository.importLegacy(onlyIfMatching: onlyIfMatching) else { return }
+            // Do not let the old in-memory predictor overwrite the imported learning.
+            forecastEngine.select(learningKey: historyRepository.learningKey, savingCurrent: false)
+            let wasSwitching = switchingProfile
+            switchingProfile = true
+            readingHistory = Self.trimmedHistory(Self.merge(readings: historyRepository.cachedGraph + readingHistory, with: nil))
+            currentReading = readingHistory.last
+            lastUpdated = currentReading?.timestamp
+            switchingProfile = wasSwitching
+            historyStore.prune(retentionDays: historyRetentionDays)
+            try historyStore.saveNowThrowing()
+            typicalDayCache = nil
+            backtestResult = nil
+            backtestProgress = nil
+            scheduleRegressionTrainingIfNeeded()
+            updatePrediction()
+            objectWillChange.send()
+            dataMessage = "Older history and forecast learning restored to this profile. The original copy is kept as a backup."
+        } catch { dataMessage = "Could not restore older history: " + error.localizedDescription }
     }
 
     func deleteLegacyHistory() {

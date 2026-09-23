@@ -213,8 +213,8 @@ struct SettingsView: View {
             }
             if service.hasLegacyHistory {
                 Divider()
-                Text("Unassigned history from an older version").font(.headline)
-                Text("Older readings are kept separately because their account and person were not recorded. Import them only after checking who they belong to.")
+                Text(service.legacyHistoryWasImported ? "Older history backup" : "Unassigned history from an older version").font(.headline)
+                Text(service.legacyHistoryWasImported ? "The older data has been imported. Its original copy is still available here as a backup." : "Older readings are restored automatically when they match this profile. Otherwise, import them only after checking who they belong to.")
                     .font(.caption).foregroundStyle(.secondary)
                 HStack {
                     Button("Export older history…") { service.exportHistory(legacy: true) }

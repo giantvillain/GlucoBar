@@ -956,6 +956,15 @@ nonisolated final class GlucosePredictor {
 
     // MARK: - Persistence
 
+    static func copyLegacyLearning(to key: String, defaults: UserDefaults) {
+        guard let data = defaults.data(forKey: "GlucoBarPredictorLearningV2"),
+              let legacy = try? JSONDecoder().decode(StoredLearning.self, from: data) else { return }
+        if let currentData = defaults.data(forKey: key),
+           let current = try? JSONDecoder().decode(StoredLearning.self, from: currentData),
+           current.scoredCount >= legacy.scoredCount { return }
+        defaults.set(data, forKey: key)
+    }
+
     private func load() {
         guard let data = UserDefaults.standard.data(forKey: defaultsKey),
               let stored = try? JSONDecoder().decode(StoredLearning.self, from: data)

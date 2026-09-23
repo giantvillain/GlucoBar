@@ -146,18 +146,17 @@ final class GlucoseHistoryStore {
     }
 
     func saveNow() {
+        try? saveNowThrowing()
+    }
+
+    /// Imports must know whether the durable copy succeeded before marking migration complete.
+    func saveNowThrowing() throws {
         saveTask?.cancel()
         saveTask = nil
         guard let fileURL else { return }
-        do {
-            try FileManager.default.createDirectory(
-                at: fileURL.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
-            let data = try JSONEncoder().encode(samples)
-            try data.write(to: fileURL, options: .atomic)
-        } catch {
-            // History is a convenience cache; losing a save is not fatal.
-        }
+        try FileManager.default.createDirectory(
+            at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let data = try JSONEncoder().encode(samples)
+        try data.write(to: fileURL, options: .atomic)
     }
 }
