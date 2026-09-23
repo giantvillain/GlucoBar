@@ -134,7 +134,6 @@ struct SettingsView: View {
         SettingsPanel("Menu bar") {
             Toggle("Show change since the previous reading", isOn: $service.menuShowsDelta)
             Toggle("Show reading age", isOn: $service.menuShowsAge)
-            Toggle("Use compact spacing", isOn: $service.compactMenu)
             Toggle("Privacy mode", isOn: $service.privacyMode)
             Text("Privacy mode hides glucose values in the menu bar, app windows and new notifications while sharing your screen.")
                 .font(.caption).foregroundStyle(.secondary)

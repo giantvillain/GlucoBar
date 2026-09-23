@@ -11,7 +11,7 @@ It sits in your menu bar and shows your current glucose + a little trend arrow. 
 ## Features
 
 - Shows glucose in your menu bar
-- Color indicator (green = in range, red = low, orange = high or old data)
+- Color-coded readings in the panel (green = in range, red = low, orange = high or old data)
 - Graph of your readings with a 3h / 6h / 12h / 24h window, hover to scrub
 - Forecast for the next 15–60 minutes that blends trend, momentum, the sensor arrow, matches against your own history, a regression trained on that history and your typical-day drift, and learns which to trust by scoring itself against what actually happens (an estimate, not medical advice)
 - Calibrated, asymmetric uncertainty band around the forecast, and optional notifications when a low or high is predicted
@@ -30,7 +30,7 @@ Settings is organised into Connection, Appearance, Alerts, Advanced and Data. Ap
 
 - **History** opens a separate, resizable window with date navigation, 3–72 hour zoom, comparisons with the preceding period, and a dedicated typical-day chart.
 - The menu panel stays open while you use Settings or History. Click the menu-bar item again, press Escape in the panel, or switch to another app to dismiss it.
-- **Privacy mode** hides readings in the menu bar and app windows and removes glucose values from new notifications. Menu-bar delta, reading age and compact spacing are optional.
+- **Privacy mode** hides readings in the menu bar and app windows and removes glucose values from new notifications. Menu-bar delta and reading age are optional. The menu-bar label uses the native font and always fits compactly around its text.
 - Unknown trends display `?`. Nightscout’s rapid rise and fall retain their double arrows. Graphs leave gaps when readings are more than 10 minutes apart.
 - Connections refresh after wake and network recovery. Failed requests retry with increasing delays; the menu shows connection problems separately from delayed sensor readings.
 - Alerts include predicted low/high and optional missing-data notifications. Settings shows macOS permission, a test button, snooze and repeat cooldowns. Snooze and cooldowns survive app restarts. Alerts require the app to run and the Mac to be awake; macOS notification settings can suppress delivery.

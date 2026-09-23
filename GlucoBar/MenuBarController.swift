@@ -37,7 +37,6 @@ final class MenuBarController: NSObject {
     private let service: LibreLinkUpService
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let popover = NSPopover()
-    private var label: StatusLabelHostingView?
     private var updates: AnyCancellable?
     private var outsideClickMonitor: Any?
     private var settingsWindow: NSWindow?
@@ -49,9 +48,10 @@ final class MenuBarController: NSObject {
         guard let button = statusItem.button else { return }
         button.target = self
         button.action = #selector(togglePanel)
-        let label = StatusLabelHostingView(rootView: MenuBarLabelView(service: service))
-        button.addSubview(label)
-        self.label = label
+        // Use the native status-item title so macOS supplies its usual menu-bar
+        // typography, contrast and compact sizing, just as MenuBarExtra did.
+        button.font = .menuBarFont(ofSize: 0)
+        button.image = nil
         updateLabel()
         updates = service.objectWillChange.receive(on: RunLoop.main).sink { [weak self] _ in
             self?.updateLabel()
@@ -79,11 +79,8 @@ final class MenuBarController: NSObject {
     }
 
     private func updateLabel() {
-        guard let label, let button = statusItem.button else { return }
-        label.invalidateIntrinsicContentSize()
-        let width = ceil(label.fittingSize.width)
-        statusItem.length = width + 14
-        label.frame = NSRect(x: 7, y: 0, width: width, height: button.bounds.height)
+        guard let button = statusItem.button else { return }
+        button.title = service.menuBarDisplayText
         button.setAccessibilityLabel(service.privacyMode ? "GlucoBar, privacy mode" :
             "GlucoBar, glucose \(service.menuBarValueText) \(service.displayUnitLabel), trend \(service.trendDescription)")
     }
@@ -138,9 +135,4 @@ final class MenuBarController: NSObject {
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
     }
-}
-
-/// Let the status button receive clicks anywhere within the SwiftUI label.
-private final class StatusLabelHostingView: NSHostingView<MenuBarLabelView> {
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }

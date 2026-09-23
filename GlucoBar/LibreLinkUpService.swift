@@ -129,7 +129,6 @@ final class LibreLinkUpService: ObservableObject {
     @Published var notifyMissingData = false { didSet { saveExtraPreferences(); if notifyMissingData && !restoring { notifier.requestAuthorizationIfNeeded() } } }
     @Published var menuShowsDelta = false { didSet { saveExtraPreferences() } }
     @Published var menuShowsAge = false { didSet { saveExtraPreferences() } }
-    @Published var compactMenu = false { didSet { saveExtraPreferences() } }
     @Published var privacyMode = false { didSet { saveExtraPreferences(); if privacyMode { notifier.hideDeliveredReadings() } } }
     private var restoring = true
     private var switchingProfile = false
@@ -837,8 +836,8 @@ final class LibreLinkUpService: ObservableObject {
     var menuBarDisplayText: String {
         if privacyMode { return "GlucoBar" }
         var text = menuBarValueText + " " + menuBarTrendSymbol
-        if menuShowsDelta, let deltaText { text += "  " + deltaText }
-        if menuShowsAge, let age = lastKnownReadingDate { text += "  \(max(0, Int(statusTick.timeIntervalSince(age) / 60)))m" }
+        if menuShowsDelta, let deltaText { text += " " + deltaText }
+        if menuShowsAge, let age = lastKnownReadingDate { text += " \(max(0, Int(statusTick.timeIntervalSince(age) / 60)))m" }
         if errorMessage != nil || !isOnline { text += " ⨯" }
         else if isDataStale { text += " ◷" }
         else if currentRangeStatus == .low { text += " !↓" }
@@ -1346,7 +1345,6 @@ final class LibreLinkUpService: ObservableObject {
         notifyMissingData = d.bool(forKey: "GlucoBar.notifyMissing")
         menuShowsDelta = d.bool(forKey: "GlucoBar.menuDelta")
         menuShowsAge = d.bool(forKey: "GlucoBar.menuAge")
-        compactMenu = d.bool(forKey: "GlucoBar.compactMenu")
         privacyMode = d.bool(forKey: "GlucoBar.privacyMode")
     }
 
@@ -1356,7 +1354,6 @@ final class LibreLinkUpService: ObservableObject {
         d.set(notifyMissingData, forKey: "GlucoBar.notifyMissing")
         d.set(menuShowsDelta, forKey: "GlucoBar.menuDelta")
         d.set(menuShowsAge, forKey: "GlucoBar.menuAge")
-        d.set(compactMenu, forKey: "GlucoBar.compactMenu")
         d.set(privacyMode, forKey: "GlucoBar.privacyMode")
     }
 

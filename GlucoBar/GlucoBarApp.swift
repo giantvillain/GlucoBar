@@ -33,25 +33,6 @@ struct GlucoBarApp: App {
     }
 }
 
-struct MenuBarLabelView: View {
-    @ObservedObject var service: LibreLinkUpService
-
-    var body: some View {
-        HStack(spacing: service.compactMenu ? 2 : 5) {
-            Circle()
-                .fill(service.privacyMode ? .secondary : service.menuBarIndicatorColor)
-                .frame(width: 6, height: 6)
-            Text(service.menuBarDisplayText)
-                .id(service.menuBarDisplayText)
-                .font(.system(size: 12, weight: .medium, design: .monospaced))
-                .frame(minWidth: service.compactMenu ? 0 : 54, alignment: .leading)
-        }
-        .accessibilityLabel(service.privacyMode ? "GlucoBar, privacy mode" : "Glucose \(service.menuBarValueText) \(service.displayUnitLabel), trend \(service.trendDescription)")
-        .lineLimit(1)
-        .fixedSize(horizontal: true, vertical: false)
-    }
-}
-
 struct AnimatedTrendArrow: View {
     let symbol: String
     let animationID: Int
