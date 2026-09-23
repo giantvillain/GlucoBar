@@ -8,17 +8,49 @@
 
 /* Begin PBXBuildFile section */
 		B3AFF09C2FDD675500A38580 /* NightscoutAPIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = B3AFF09B2FDD675400A38580 /* NightscoutAPIClient.swift */; };
+		C0DEC0DE0000000000000065 /* GlucoBar/ReadingSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEC0DE0000000000000001 /* GlucoBar/ReadingSupport.swift */; };
+		C0DEC0DE0000000000000066 /* GlucoBar/LibreLinkUpModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEC0DE0000000000000002 /* GlucoBar/LibreLinkUpModels.swift */; };
+		C0DEC0DE0000000000000067 /* GlucoBar/GlucoseHistoryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEC0DE0000000000000003 /* GlucoBar/GlucoseHistoryStore.swift */; };
+		C0DEC0DE0000000000000068 /* GlucoBar/GlucoseHistoryRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEC0DE0000000000000004 /* GlucoBar/GlucoseHistoryRepository.swift */; };
+		C0DEC0DE0000000000000069 /* GlucoBar/GlucosePredictor.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEC0DE0000000000000005 /* GlucoBar/GlucosePredictor.swift */; };
+		C0DEC0DE000000000000006A /* GlucoBar/GlucoseAnalytics.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEC0DE0000000000000006 /* GlucoBar/GlucoseAnalytics.swift */; };
+		C0DEC0DE000000000000006B /* GlucoBar/RidgeForecastModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEC0DE0000000000000007 /* GlucoBar/RidgeForecastModel.swift */; };
+		C0DEC0DE000000000000006C /* GlucoBar/ForecastBacktest.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEC0DE0000000000000008 /* GlucoBar/ForecastBacktest.swift */; };
+		C0DEC0DE000000000000006D /* GlucoBar/ForecastEvaluation.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEC0DE0000000000000009 /* GlucoBar/ForecastEvaluation.swift */; };
+		C0DEC0DE000000000000006E /* GlucoBar/ForecastNotifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEC0DE000000000000000A /* GlucoBar/ForecastNotifier.swift */; };
+		C0DEC0DE000000000000006F /* GlucoBar/GlucoseConnectionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEC0DE000000000000000B /* GlucoBar/GlucoseConnectionManager.swift */; };
+		C0DEC0DE0000000000000070 /* GlucoBar/LibreLinkUpAPIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEC0DE000000000000000C /* GlucoBar/LibreLinkUpAPIClient.swift */; };
+		C0DEC0DE0000000000000071 /* NightscoutAPIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEC0DE000000000000000D /* NightscoutAPIClient.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		B3AFF09B2FDD675400A38580 /* NightscoutAPIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NightscoutAPIClient.swift; sourceTree = "<group>"; };
 		B3BA2D2B2FD96CED000714C7 /* GlucoBar.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = GlucoBar.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		C0DEC0DE0000000000000001 /* GlucoBar/ReadingSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlucoBar/ReadingSupport.swift; sourceTree = SOURCE_ROOT; };
+		C0DEC0DE0000000000000002 /* GlucoBar/LibreLinkUpModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlucoBar/LibreLinkUpModels.swift; sourceTree = SOURCE_ROOT; };
+		C0DEC0DE0000000000000003 /* GlucoBar/GlucoseHistoryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlucoBar/GlucoseHistoryStore.swift; sourceTree = SOURCE_ROOT; };
+		C0DEC0DE0000000000000004 /* GlucoBar/GlucoseHistoryRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlucoBar/GlucoseHistoryRepository.swift; sourceTree = SOURCE_ROOT; };
+		C0DEC0DE0000000000000005 /* GlucoBar/GlucosePredictor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlucoBar/GlucosePredictor.swift; sourceTree = SOURCE_ROOT; };
+		C0DEC0DE0000000000000006 /* GlucoBar/GlucoseAnalytics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlucoBar/GlucoseAnalytics.swift; sourceTree = SOURCE_ROOT; };
+		C0DEC0DE0000000000000007 /* GlucoBar/RidgeForecastModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlucoBar/RidgeForecastModel.swift; sourceTree = SOURCE_ROOT; };
+		C0DEC0DE0000000000000008 /* GlucoBar/ForecastBacktest.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlucoBar/ForecastBacktest.swift; sourceTree = SOURCE_ROOT; };
+		C0DEC0DE0000000000000009 /* GlucoBar/ForecastEvaluation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlucoBar/ForecastEvaluation.swift; sourceTree = SOURCE_ROOT; };
+		C0DEC0DE000000000000000A /* GlucoBar/ForecastNotifier.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlucoBar/ForecastNotifier.swift; sourceTree = SOURCE_ROOT; };
+		C0DEC0DE000000000000000B /* GlucoBar/GlucoseConnectionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlucoBar/GlucoseConnectionManager.swift; sourceTree = SOURCE_ROOT; };
+		C0DEC0DE000000000000000C /* GlucoBar/LibreLinkUpAPIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlucoBar/LibreLinkUpAPIClient.swift; sourceTree = SOURCE_ROOT; };
+		C0DEC0DE000000000000000D /* NightscoutAPIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NightscoutAPIClient.swift; sourceTree = SOURCE_ROOT; };
+		C0DEC0DE00000000000000C8 /* GlucoBarTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; path = GlucoBarTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		B3BA2D2D2FD96CED000714C7 /* GlucoBar */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = GlucoBar;
+			sourceTree = "<group>";
+		};
+		C0DEC0DE00000000000000C9 /* GlucoBarTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = GlucoBarTests;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -31,24 +63,54 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		C0DEC0DE00000000000000CA /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
 		B3BA2D222FD96CED000714C7 = {
 			isa = PBXGroup;
 			children = (
+				C0DEC0DE00000000000000C9 /* GlucoBarTests */,
 				B3BA2D2D2FD96CED000714C7 /* GlucoBar */,
 				B3BA2D2C2FD96CED000714C7 /* Products */,
 				B3AFF09B2FDD675400A38580 /* NightscoutAPIClient.swift */,
+				B3CF5BD3306428EC00AAED7E /* Recovered References */,
 			);
 			sourceTree = "<group>";
 		};
 		B3BA2D2C2FD96CED000714C7 /* Products */ = {
 			isa = PBXGroup;
 			children = (
+				C0DEC0DE00000000000000C8 /* GlucoBarTests.xctest */,
 				B3BA2D2B2FD96CED000714C7 /* GlucoBar.app */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		B3CF5BD3306428EC00AAED7E /* Recovered References */ = {
+			isa = PBXGroup;
+			children = (
+				C0DEC0DE0000000000000001 /* GlucoBar/ReadingSupport.swift */,
+				C0DEC0DE0000000000000002 /* GlucoBar/LibreLinkUpModels.swift */,
+				C0DEC0DE0000000000000003 /* GlucoBar/GlucoseHistoryStore.swift */,
+				C0DEC0DE0000000000000004 /* GlucoBar/GlucoseHistoryRepository.swift */,
+				C0DEC0DE0000000000000005 /* GlucoBar/GlucosePredictor.swift */,
+				C0DEC0DE0000000000000006 /* GlucoBar/GlucoseAnalytics.swift */,
+				C0DEC0DE0000000000000007 /* GlucoBar/RidgeForecastModel.swift */,
+				C0DEC0DE0000000000000008 /* GlucoBar/ForecastBacktest.swift */,
+				C0DEC0DE0000000000000009 /* GlucoBar/ForecastEvaluation.swift */,
+				C0DEC0DE000000000000000A /* GlucoBar/ForecastNotifier.swift */,
+				C0DEC0DE000000000000000B /* GlucoBar/GlucoseConnectionManager.swift */,
+				C0DEC0DE000000000000000C /* GlucoBar/LibreLinkUpAPIClient.swift */,
+				C0DEC0DE000000000000000D /* NightscoutAPIClient.swift */,
+			);
+			name = "Recovered References";
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -75,6 +137,25 @@
 			productName = GlucoBar;
 			productReference = B3BA2D2B2FD96CED000714C7 /* GlucoBar.app */;
 			productType = "com.apple.product-type.application";
+		};
+		C0DEC0DE00000000000000CC /* GlucoBarTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = C0DEC0DE00000000000000CD /* Build configuration list for PBXNativeTarget "GlucoBarTests" */;
+			buildPhases = (
+				C0DEC0DE00000000000000CB /* Sources */,
+				C0DEC0DE00000000000000CA /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				C0DEC0DE00000000000000C9 /* GlucoBarTests */,
+			);
+			name = GlucoBarTests;
+			productName = GlucoBarTests;
+			productReference = C0DEC0DE00000000000000C8 /* GlucoBarTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
 		};
 /* End PBXNativeTarget section */
 
@@ -105,6 +186,7 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
+				C0DEC0DE00000000000000CC /* GlucoBarTests */,
 				B3BA2D2A2FD96CED000714C7 /* GlucoBar */,
 			);
 		};
@@ -126,6 +208,26 @@
 			buildActionMask = 2147483647;
 			files = (
 				B3AFF09C2FDD675500A38580 /* NightscoutAPIClient.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		C0DEC0DE00000000000000CB /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C0DEC0DE0000000000000065 /* GlucoBar/ReadingSupport.swift in Sources */,
+				C0DEC0DE0000000000000066 /* GlucoBar/LibreLinkUpModels.swift in Sources */,
+				C0DEC0DE0000000000000067 /* GlucoBar/GlucoseHistoryStore.swift in Sources */,
+				C0DEC0DE0000000000000068 /* GlucoBar/GlucoseHistoryRepository.swift in Sources */,
+				C0DEC0DE0000000000000069 /* GlucoBar/GlucosePredictor.swift in Sources */,
+				C0DEC0DE000000000000006A /* GlucoBar/GlucoseAnalytics.swift in Sources */,
+				C0DEC0DE000000000000006B /* GlucoBar/RidgeForecastModel.swift in Sources */,
+				C0DEC0DE000000000000006C /* GlucoBar/ForecastBacktest.swift in Sources */,
+				C0DEC0DE000000000000006D /* GlucoBar/ForecastEvaluation.swift in Sources */,
+				C0DEC0DE000000000000006E /* GlucoBar/ForecastNotifier.swift in Sources */,
+				C0DEC0DE000000000000006F /* GlucoBar/GlucoseConnectionManager.swift in Sources */,
+				C0DEC0DE0000000000000070 /* GlucoBar/LibreLinkUpAPIClient.swift in Sources */,
+				C0DEC0DE0000000000000071 /* NightscoutAPIClient.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -340,6 +442,42 @@
 			};
 			name = Release;
 		};
+		C0DEC0DE00000000000000CE /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				ENABLE_TESTABILITY = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.connor.GlucoBarTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SUPPORTED_PLATFORMS = macosx;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		C0DEC0DE00000000000000CF /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				ENABLE_TESTABILITY = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.connor.GlucoBarTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SUPPORTED_PLATFORMS = macosx;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -357,6 +495,15 @@
 			buildConfigurations = (
 				B3BA2D392FD96CEE000714C7 /* Debug */,
 				B3BA2D3A2FD96CEE000714C7 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		C0DEC0DE00000000000000CD /* Build configuration list for PBXNativeTarget "GlucoBarTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				C0DEC0DE00000000000000CE /* Debug */,
+				C0DEC0DE00000000000000CF /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

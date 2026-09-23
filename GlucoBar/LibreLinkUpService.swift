@@ -4,6 +4,7 @@ import Combine
 import AppKit
 import ServiceManagement
 import Security
+import UniformTypeIdentifiers
 
 @MainActor
 final class LibreLinkUpService: ObservableObject {
@@ -87,16 +88,16 @@ final class LibreLinkUpService: ObservableObject {
         }
     }
 
-    @Published var notifyPredictedLow: Bool = true {
+    @Published var notifyPredictedLow: Bool = false {
         didSet {
             persistPreferences()
-            if notifyPredictedLow { notifier.requestAuthorizationIfNeeded() }
+            if notifyPredictedLow && !restoring { notifier.requestAuthorizationIfNeeded() }
         }
     }
     @Published var notifyPredictedHigh: Bool = false {
         didSet {
             persistPreferences()
-            if notifyPredictedHigh { notifier.requestAuthorizationIfNeeded() }
+            if notifyPredictedHigh && !restoring { notifier.requestAuthorizationIfNeeded() }
         }
     }
     @Published var notificationCooldownMinutes: Int = 30 {
@@ -114,17 +115,33 @@ final class LibreLinkUpService: ObservableObject {
     static let trendsPeriodOptions: [Int] = [0, 7, 14, 30, 90]
     static let historyRetentionOptions: [Int] = [30, 60, 90]
 
-    let historyStore = GlucoseHistoryStore()
-    private let predictor = GlucosePredictor()
-    private let notifier = ForecastNotifier()
+    private let historyRepository = GlucoseHistoryRepository()
+    var historyStore: GlucoseHistoryStore { historyRepository.store }
+    private let forecastEngine = GlucoseForecastEngine()
+    private var predictor: GlucosePredictor { forecastEngine.predictor }
+    let notifier = ForecastNotifier()
+    @Published private(set) var availableConnections: [LibreLinkConnection] = []
+    @Published private(set) var selectedPersonID: String?
+    @Published private(set) var isOnline = true
+    @Published private(set) var nextRefreshAt: Date?
+    @Published private(set) var connectionIssue: String?
+    @Published var dataMessage: String?
+    @Published var notifyMissingData = false { didSet { saveExtraPreferences(); if notifyMissingData && !restoring { notifier.requestAuthorizationIfNeeded() } } }
+    @Published var menuShowsDelta = false { didSet { saveExtraPreferences() } }
+    @Published var menuShowsAge = false { didSet { saveExtraPreferences() } }
+    @Published var compactMenu = false { didSet { saveExtraPreferences() } }
+    @Published var privacyMode = false { didSet { saveExtraPreferences(); if privacyMode { notifier.hideDeliveredReadings() } } }
+    private var restoring = true
+    private var switchingProfile = false
+    private var requestGeneration = UUID()
+    private var notifierSubscription: AnyCancellable?
+    private var failureCount = 0
+    private var recoveryRequested = false
     @Published private(set) var prediction: GlucosePrediction?
     @Published private(set) var backtestResult: ForecastBacktestResult?
     /// Fraction complete while a backtest runs, nil otherwise.
     @Published private(set) var backtestProgress: Double?
     private var typicalDayCache: (version: Int, lookback: Int, profile: TypicalDayProfile?)?
-    private var ridgeTrainingTask: Task<Void, Never>?
-    private var ridgeTrainedVersion = -1
-    private var ridgeTrainedAt: Date?
     @Published var lowThresholdEnabled: Bool = true {
         didSet { persistPreferences() }
     }
@@ -157,23 +174,19 @@ final class LibreLinkUpService: ObservableObject {
     @Published private(set) var statusTick: Date = .now
 
     @Published var dataSource: DataSource = .libreLinkUp {
-        didSet { persistPreferences() }
+        didSet { persistPreferences(); if !restoring && oldValue != dataSource { resetConnection() } }
     }
     @Published var nightscoutBaseURL: String = "" {
         didSet { persistPreferences() }
     }
     @Published var nightscoutToken: String = ""
 
-    private let apiClient: LibreLinkUpAPIClient
-    private let nightscoutAPI = NightscoutAPIClient()
-    private var authToken: String?
-    private var accountId: String?
+    private let connectionManager: GlucoseConnectionManager
     private var selectedConnection: LibreLinkConnection?
     private var statusTimer: Timer?
     private var refreshTask: Task<Void, Never>?
 
     private let preferencesKey = "GlucoBarLibreLinkUpPreferences"
-    private static let graphCacheKey = "GlucoBarLibreLinkUpGraphCache"
     private static let cachedHistoryWindow: TimeInterval = 24 * 60 * 60
     static let graphWindowPresets: [Int] = [3, 6, 12, 24]
     private static let timeFormatter: DateFormatter = {
@@ -205,18 +218,32 @@ final class LibreLinkUpService: ObservableObject {
         "token"
     ]
 
-    init(apiClient: LibreLinkUpAPIClient? = nil) {
-        self.apiClient = apiClient ?? LibreLinkUpAPIClient()
+    init(apiClient: LibreLinkUpAPIClient? = nil, startAutomatically: Bool = true) {
+        self.connectionManager = GlucoseConnectionManager(api: apiClient ?? LibreLinkUpAPIClient())
+        notifierSubscription = notifier.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }
+        guard startAutomatically else { return }
         restorePreferences()
-        restoreCachedHistory()
         loadNightscoutTokenFromKeychain()
         launchAtLoginEnabled = (SMAppService.mainApp.status == .enabled)
+        restoreExtraPreferences()
+        restoring = false
+        selectedPersonID = UserDefaults.standard.string(forKey: personPreferenceKey)
+        restoreActiveProfile()
+        connectionManager.onConnections = { [weak self] in self?.availableConnections = $0 }
+        connectionManager.onNetworkChange = { [weak self] online in
+            guard let self else { return }
+            let recovered = !self.isOnline && online
+            self.isOnline = online
+            if !online { self.connectionIssue = "Offline" }
+            if recovered { self.connectionIssue = nil; self.recoverConnection() }
+        }
+        connectionManager.onWake = { [weak self] in
+            guard let self else { return }
+            self.recoverConnection()
+        }
+        connectionManager.startMonitoring()
         startStatusTimer()
         startRefreshLoop()
-
-        if notifyPredictedLow || notifyPredictedHigh {
-            notifier.requestAuthorizationIfNeeded()
-        }
 
         NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification,
@@ -266,11 +293,7 @@ final class LibreLinkUpService: ObservableObject {
 
         let cutoff = statusTick.addingTimeInterval(-graphWindowInterval)
         let filtered = sorted.filter { $0.timestamp >= cutoff }
-        if !filtered.isEmpty {
-            return filtered
-        }
-
-        return Array(sorted.suffix(min(sorted.count, 24)))
+        return filtered
     }
 
     var graphWindowInterval: TimeInterval {
@@ -292,9 +315,9 @@ final class LibreLinkUpService: ObservableObject {
 
     var graphYAxisLabels: (top: String, middle: String, bottom: String) {
         return (
-            top: formattedValue(for: fixedGraphBounds.max),
+            top: formattedValue(for: graphBounds.max),
             middle: "",
-            bottom: formattedValue(for: fixedGraphBounds.min)
+            bottom: formattedValue(for: graphBounds.min)
         )
     }
 
@@ -384,7 +407,7 @@ final class LibreLinkUpService: ObservableObject {
 
     /// Colour for the headline value: range status when data is fresh, otherwise the connection state.
     var headlineColor: Color {
-        if errorMessage != nil { return .red }
+        if errorMessage != nil || !isOnline { return .red }
         if isDataStale { return .orange }
         return rangeColor(for: currentRangeStatus)
     }
@@ -439,7 +462,9 @@ final class LibreLinkUpService: ObservableObject {
     var windowStats: WindowStats? {
         let readings = graphReadings
         guard !readings.isEmpty else { return nil }
-        let values = readings.map(\.valueMgDl)
+        let binned = GlucoseHistoryStore(fileURL: nil)
+        binned.merge(readings)
+        let values = binned.samples.map(\.v)
         let low = values.min() ?? 0
         let high = values.max() ?? 0
         let average = values.reduce(0, +) / Double(values.count)
@@ -510,7 +535,10 @@ final class LibreLinkUpService: ObservableObject {
     }
 
     func resetForecastLearning() {
-        predictor.resetLearning()
+        forecastEngine.reset()
+        backtestProgress = nil
+        backtestResult = nil
+        scheduleRegressionTrainingIfNeeded()
         updatePrediction()
     }
 
@@ -519,17 +547,13 @@ final class LibreLinkUpService: ObservableObject {
         guard backtestProgress == nil else { return }
         let samples = historyStore.samples
         backtestProgress = 0
-        Task.detached(priority: .userInitiated) { [weak self] in
-            let result = ForecastBacktest.run(samples: samples, evaluationDays: days) { fraction in
-                Task { @MainActor [weak self] in
-                    self?.backtestProgress = fraction
-                }
-            }
-            await MainActor.run { [weak self] in
-                self?.backtestResult = result
-                self?.backtestProgress = nil
-            }
-        }
+        forecastEngine.backtest(samples: samples, days: days, progress: { [weak self] in
+            self?.backtestProgress = $0
+        }, completion: { [weak self] in
+            self?.backtestResult = $0
+            self?.backtestProgress = nil
+            if $0 == nil { self?.dataMessage = "Not enough continuous history to complete the backtest." }
+        })
     }
 
     /// Rolling average over the visible window, computed from the full cache so the start of the window is complete.
@@ -594,9 +618,11 @@ final class LibreLinkUpService: ObservableObject {
     }
 
     private func historyDidChange() {
+        guard !restoring, !switchingProfile, historyRepository.profileID != nil else { return }
         historyStore.merge(readingHistory)
         historyStore.prune(retentionDays: historyRetentionDays)
         predictor.learn(from: readingHistory)
+        forecastEngine.evaluation.learn(readings: readingHistory, now: .now)
         scheduleRegressionTrainingIfNeeded()
         updatePrediction()
     }
@@ -613,37 +639,24 @@ final class LibreLinkUpService: ObservableObject {
             typicalDay: typicalDayProfile,
             now: .now
         )
+        if let forecast = activePrediction {
+            forecastEngine.evaluation.record(forecast, low: effectiveLowMgDl, high: effectiveHighMgDl)
+        }
         evaluateForecastNotifications()
     }
 
     /// Retrains the regression in the background at startup and then at most every six hours.
     private func scheduleRegressionTrainingIfNeeded() {
-        guard predictionEnabled, ridgeTrainingTask == nil else { return }
-        guard historyStore.version != ridgeTrainedVersion else { return }
-        if let trainedAt = ridgeTrainedAt, Date().timeIntervalSince(trainedAt) < 6 * 3600 {
-            return
-        }
-        ridgeTrainedVersion = historyStore.version
-        let samples = historyStore.samples
-        let typical = typicalDayProfile
-        ridgeTrainingTask = Task.detached(priority: .utility) { [weak self] in
-            let model = RidgeForecastModel.train(samples: samples, typical: typical, now: .now)
-            await MainActor.run { [weak self] in
-                guard let self else { return }
-                self.ridgeTrainingTask = nil
-                self.ridgeTrainedAt = .now
-                if let model {
-                    self.predictor.ridgeModel = model
-                    self.updatePrediction()
-                }
-            }
+        guard predictionEnabled, historyRepository.profileID != nil else { return }
+        forecastEngine.train(samples: historyStore.samples, version: historyStore.version, typical: typicalDayProfile) { [weak self] in
+            self?.updatePrediction()
         }
     }
 
     private func evaluateForecastNotifications() {
         guard notifyPredictedLow || notifyPredictedHigh, !isDataStale else { return }
         guard let forecast = activePrediction,
-              let crossing = forecast.firstCrossing(lowMgDl: effectiveLowMgDl, highMgDl: effectiveHighMgDl)
+              let crossing = forecast.firstCrossing(lowMgDl: notifyPredictedLow ? effectiveLowMgDl : nil, highMgDl: notifyPredictedHigh ? effectiveHighMgDl : nil)
         else { return }
         let threshold = crossing.status == .low ? effectiveLowMgDl : effectiveHighMgDl
         guard let threshold else { return }
@@ -657,7 +670,7 @@ final class LibreLinkUpService: ObservableObject {
             ),
             notifyLow: notifyPredictedLow,
             notifyHigh: notifyPredictedHigh,
-            cooldown: TimeInterval(notificationCooldownMinutes) * 60
+            cooldown: TimeInterval(notificationCooldownMinutes) * 60, privacy: privacyMode
         )
     }
 
@@ -669,6 +682,7 @@ final class LibreLinkUpService: ObservableObject {
 
     var connectionState: ConnectionState {
         let authenticated = (dataSource == .nightscout && !nightscoutBaseURL.isEmpty) || isAuthenticated
+        if !isOnline && hasStoredCredentials { return .error("Offline — waiting for a network connection") }
         if let errorMessage {
             return .error(errorMessage)
         }
@@ -698,7 +712,7 @@ final class LibreLinkUpService: ObservableObject {
         case .connected:
             return "Connected"
         case .stale:
-            return "Stale"
+            return "Sensor data delayed"
         case .error:
             return "Connection problem"
         }
@@ -791,7 +805,7 @@ final class LibreLinkUpService: ObservableObject {
 
     /// Colour of the small dot in the menu bar: red on error, orange when stale, otherwise the range status.
     var menuBarIndicatorColor: Color {
-        if errorMessage != nil { return .red }
+        if errorMessage != nil || !isOnline { return .red }
         if isDataStale { return .orange }
         guard currentReading != nil else { return .secondary }
         switch currentRangeStatus {
@@ -808,7 +822,7 @@ final class LibreLinkUpService: ObservableObject {
     }
 
     var menuBarTrendSymbol: String {
-        trendSymbol(for: displayTrendArrow) ?? "→"
+        ReadingSupport.trendSymbol(displayTrendArrow)
     }
 
     var menuBarTrendColor: Color {
@@ -820,13 +834,18 @@ final class LibreLinkUpService: ObservableObject {
     }
 
     var menuBarDisplayText: String {
-        var text = menuBarValueText
-        text += " \(menuBarTrendSymbol)"
-        if isDataStale {
-            text += " \(menuBarBadgeText)"
-        }
+        if privacyMode { return "GlucoBar" }
+        var text = menuBarValueText + " " + menuBarTrendSymbol
+        if menuShowsDelta, let deltaText { text += "  " + deltaText }
+        if menuShowsAge, let age = lastKnownReadingDate { text += "  \(max(0, Int(statusTick.timeIntervalSince(age) / 60)))m" }
+        if errorMessage != nil || !isOnline { text += " ⨯" }
+        else if isDataStale { text += " ◷" }
+        else if currentRangeStatus == .low { text += " !↓" }
+        else if currentRangeStatus == .high { text += " !↑" }
         return text
     }
+
+    var trendDescription: String { ReadingSupport.trendDescription(displayTrendArrow) }
 
     var lastUpdatedText: String? {
         guard let referenceDate = lastKnownReadingDate else { return nil }
@@ -849,38 +868,17 @@ final class LibreLinkUpService: ObservableObject {
     }
 
     func formattedValue(for valueMgDl: Double) -> String {
-        if useMmolPerL {
-            return String(format: "%.1f", valueMgDl / 18.0)
-        }
-        return String(format: "%.0f", valueMgDl.rounded())
+        ReadingSupport.formatted(valueMgDl, mmol: useMmolPerL)
     }
 
     func trendSymbol(for trendArrow: Int?) -> String? {
-        guard let trendArrow else { return nil }
-        switch trendArrow {
-        case ..<1:
-            return nil
-        case 1:
-            return "↓"
-        case 2:
-            return "↘"
-        case 3:
-            return "→"
-        case 4:
-            return "↗"
-        case 5:
-            return "↑"
-        case 6...:
-            return "↑↑"
-        default:
-            return nil
-        }
+        trendArrow == nil ? nil : ReadingSupport.trendSymbol(trendArrow)
     }
 
     func trendColor(for trendArrow: Int?) -> Color {
         guard let trendArrow else { return .secondary }
         switch trendArrow {
-        case 1, 2:
+        case 1, 2, 7:
             return .red
         case 3:
             return .secondary
@@ -895,37 +893,59 @@ final class LibreLinkUpService: ObservableObject {
         readingUpdateAnimationID += 1
     }
 
-    func authenticate() async {
-        switch dataSource {
-        case .libreLinkUp:
-            guard hasStoredCredentials else {
-                errorMessage = "Open Settings to sign in."
-                isAuthenticated = false
-                return
+    func authenticate() async { await fetchGlucose(forceLogin: true) }
+    func reconnect() async { await fetchGlucose(forceLogin: true) }
+
+    func fetchGlucose(forceLogin: Bool = false) async {
+        guard !restoring, !isLoading, hasStoredCredentials, isOnline else { return }
+        let generation = requestGeneration
+        isLoading = true
+        nextRefreshAt = nil
+        defer {
+            if generation == requestGeneration {
+                isLoading = false
+                if recoveryRequested {
+                    recoveryRequested = false
+                    Task { await self.fetchGlucose() }
+                } else { startRefreshLoop() }
             }
-            await runRefreshFlow(forceLogin: true)
-        case .nightscout:
+        }
+        do {
+            let result = try await connectionManager.fetch(source: dataSource, email: email, password: password,
+                url: nightscoutBaseURL, token: nightscoutToken, personID: selectedPersonID, forceLogin: forceLogin)
+            guard generation == requestGeneration else { return }
+            if historyRepository.profileID != result.profileID { activateProfile(result.profileID) }
+            selectedConnection = result.selected
+            availableConnections = result.connections
+            if let selected = result.selected {
+                selectedPersonID = selected.patientId ?? selected.id
+                UserDefaults.standard.set(selectedPersonID, forKey: personPreferenceKey)
+            }
+            statusTick = .now
+            let merged = Self.trimmedHistory(Self.merge(readings: readingHistory + result.readings, with: nil))
+            currentReading = merged.last
+            lastUpdated = currentReading?.timestamp
+            readingHistory = merged
             isAuthenticated = true
             errorMessage = nil
-            await fetchNightscout()
-        }
-    }
-
-    func fetchGlucose() async {
-        switch dataSource {
-        case .libreLinkUp:
-            await runRefreshFlow(forceLogin: false)
-        case .nightscout:
-            await fetchNightscout()
-        }
-    }
-
-    func reconnect() async {
-        switch dataSource {
-        case .libreLinkUp:
-            await runRefreshFlow(forceLogin: true)
-        case .nightscout:
-            await fetchNightscout()
+            connectionIssue = nil
+            failureCount = 0
+            persistCredentials()
+            persistNightscoutToken()
+            persistGraphCache()
+            updatePrediction()
+        } catch {
+            guard generation == requestGeneration, !(error is CancellationError) else { return }
+            isAuthenticated = false
+            failureCount += 1
+            errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            if let error = error as? LibreLinkUpError, error.isAuthenticationRelated {
+                connectionIssue = "Login expired — check your credentials"
+            } else if let error = error as? NightscoutAPIError, case .httpStatus(let code) = error, code == 401 || code == 403 {
+                connectionIssue = "Access denied — check your API token"
+            } else if let error = error as? URLError, [.notConnectedToInternet, .networkConnectionLost].contains(error.code) {
+                connectionIssue = "Network unavailable"
+            } else { connectionIssue = "Connection problem" }
         }
     }
 
@@ -941,85 +961,6 @@ final class LibreLinkUpService: ObservableObject {
             errorMessage = error.localizedDescription
             launchAtLoginEnabled = (SMAppService.mainApp.status == .enabled)
         }
-    }
-
-    private func runRefreshFlow(forceLogin: Bool) async {
-        guard hasStoredCredentials else {
-            errorMessage = "Open Settings to sign in."
-            isAuthenticated = false
-            currentReading = nil
-            return
-        }
-
-        isLoading = true
-        defer { isLoading = false }
-
-        do {
-            if forceLogin || authToken == nil || accountId == nil {
-                let session = try await apiClient.authenticate(email: email, password: password)
-                authToken = session.authToken
-                accountId = session.accountId
-            }
-
-            try await refreshConnectionData(retryAfterRelogin: !forceLogin)
-            isAuthenticated = true
-            errorMessage = nil
-            persistCredentials()
-            persistGraphCache()
-            updateLastKnownReading()
-        } catch {
-            isAuthenticated = false
-            errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-        }
-    }
-
-    /// Fetches connections and graph data. When the stored session token has expired, signs in
-    /// again once and retries, so an expired token recovers without the user pressing Reconnect.
-    private func refreshConnectionData(retryAfterRelogin: Bool) async throws {
-        do {
-            try await performConnectionRefresh()
-        } catch where retryAfterRelogin && isAuthenticationError(error) {
-            let session = try await apiClient.authenticate(email: email, password: password)
-            authToken = session.authToken
-            accountId = session.accountId
-            try await performConnectionRefresh()
-        }
-    }
-
-    private func performConnectionRefresh() async throws {
-        guard let authToken, let accountId else {
-            throw LibreLinkUpError.missingCredentials
-        }
-
-        let connections = try await apiClient.fetchConnections(authToken: authToken, accountId: accountId)
-        guard let connection = connections.first(where: { $0.patientId?.isEmpty == false }) ?? connections.first else {
-            selectedConnection = nil
-            readingHistory = []
-            currentReading = nil
-            throw LibreLinkUpError.noConnections
-        }
-
-        selectedConnection = connection
-
-        let patientId = connection.patientId ?? connection.id
-        guard !patientId.isEmpty else {
-            throw LibreLinkUpError.missingPatientId
-        }
-
-        let graph = try await apiClient.fetchGraph(
-            patientId: patientId,
-            authToken: authToken,
-            accountId: accountId
-        )
-
-        let graphReadings = graph.graphReadings.sorted(by: { $0.timestamp < $1.timestamp })
-        let connectionReading = graph.data.connection?.currentReading ?? connection.currentReading
-        // Keep what was already cached so the history grows past the 12 hours the API returns.
-        let merged = Self.merge(readings: readingHistory + graphReadings, with: connectionReading)
-
-        readingHistory = Self.trimmedHistory(merged)
-        currentReading = readingHistory.last
-        lastUpdated = currentReading?.timestamp ?? readingHistory.last?.timestamp
     }
 
     private func restorePreferences() {
@@ -1049,7 +990,7 @@ final class LibreLinkUpService: ObservableObject {
                 trendsEnabled = preferences.trendsEnabled ?? true
                 trendsPeriodDays = preferences.trendsPeriodDays ?? 7
                 historyRetentionDays = preferences.historyRetentionDays ?? 90
-                notifyPredictedLow = preferences.notifyPredictedLow ?? true
+                notifyPredictedLow = preferences.notifyPredictedLow ?? false
                 notifyPredictedHigh = preferences.notifyPredictedHigh ?? false
                 notificationCooldownMinutes = preferences.notificationCooldownMinutes ?? 30
                 if let token = preferences.nightscoutToken, !token.isEmpty {
@@ -1069,6 +1010,7 @@ final class LibreLinkUpService: ObservableObject {
     }
 
     private func persistPreferences() {
+        guard !restoring else { return }
         let preferences = StoredPreferences(
             useMmolPerL: useMmolPerL,
             graphRange: nil,
@@ -1106,14 +1048,14 @@ final class LibreLinkUpService: ObservableObject {
     }
 
     private func loadStoredCredentials() {
-        for key in Self.emailKeyCandidates {
+        for key in (UserDefaults.standard.bool(forKey: "GlucoBar.ignoreLegacyCredentials") ? Array(Self.emailKeyCandidates.prefix(1)) : Self.emailKeyCandidates) {
             if let value = KeychainHelper.load(key: key) {
                 email = value
                 break
             }
         }
 
-        for key in Self.passwordKeyCandidates {
+        for key in (UserDefaults.standard.bool(forKey: "GlucoBar.ignoreLegacyCredentials") ? Array(Self.passwordKeyCandidates.prefix(1)) : Self.passwordKeyCandidates) {
             if let value = KeychainHelper.load(key: key) {
                 password = value
                 break
@@ -1122,34 +1064,13 @@ final class LibreLinkUpService: ObservableObject {
     }
 
     private func persistCredentials() {
-        guard !email.isEmpty, !password.isEmpty else { return }
+        guard dataSource == .libreLinkUp, !email.isEmpty, !password.isEmpty else { return }
         KeychainHelper.save(key: Self.emailKeyCandidates[0], value: email)
         KeychainHelper.save(key: Self.passwordKeyCandidates[0], value: password)
     }
 
-    private func restoreCachedHistory() {
-        guard let data = UserDefaults.standard.data(forKey: Self.graphCacheKey) else {
-            return
-        }
-
-        do {
-            let cache = try JSONDecoder.libreLinkUp.decode(GraphCache.self, from: data)
-            readingHistory = Self.trimmedHistory(cache.readings)
-            currentReading = readingHistory.last
-            lastUpdated = currentReading?.timestamp
-        } catch {
-            // Ignore unreadable cache and continue fresh.
-        }
-    }
-
     private func persistGraphCache() {
-        let cache = GraphCache(readings: Self.trimmedHistory(readingHistory))
-        do {
-            let data = try JSONEncoder.libreLinkUp.encode(cache)
-            UserDefaults.standard.set(data, forKey: Self.graphCacheKey)
-        } catch {
-            // Ignore cache write failures.
-        }
+        historyRepository.saveGraph(Self.trimmedHistory(readingHistory))
     }
 
     private func updateLastKnownReading() {
@@ -1175,60 +1096,33 @@ final class LibreLinkUpService: ObservableObject {
         statusTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
             DispatchQueue.main.async { [weak self] in
                 self?.statusTick = .now
+                self?.checkMissingData()
             }
         }
+    }
+
+    private func recoverConnection() {
+        statusTick = .now
+        if isLoading { recoveryRequested = true }
+        else { Task { await self.fetchGlucose() } }
     }
 
     private func startRefreshLoop() {
         refreshTask?.cancel()
+        let interval = autoRefreshInterval
+        nextRefreshAt = hasStoredCredentials && isOnline ? Date().addingTimeInterval(interval) : nil
         refreshTask = Task { [weak self] in
-            guard let self else { return }
-
-            while !Task.isCancelled {
-                let interval = self.autoRefreshInterval
-
-                do {
-                    try await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
-                } catch {
-                    break
-                }
-
-                if Task.isCancelled {
-                    break
-                }
-
-                await self.refreshIfNeeded()
-            }
+            do { try await Task.sleep(for: .seconds(interval)) } catch { return }
+            guard let self, !Task.isCancelled else { return }
+            if self.hasStoredCredentials && self.isOnline { await self.fetchGlucose() }
+            else { self.startRefreshLoop() }
         }
-    }
-
-    private func refreshIfNeeded() async {
-        guard hasStoredCredentials, !isLoading else { return }
-        await fetchGlucose()
     }
 
     private var autoRefreshInterval: TimeInterval {
-        if !hasStoredCredentials {
-            return 15 * 60
-        }
-        if errorMessage != nil {
-            return ProcessInfo.processInfo.isLowPowerModeEnabled ? 15 * 60 : 5 * 60
-        }
-        // Treat Nightscout as always authenticated when URL is present
-        if dataSource == .nightscout || isAuthenticated == false {
-            return 5 * 60
-        }
-        return ProcessInfo.processInfo.isLowPowerModeEnabled ? 300 : 60
-    }
-
-    private func isAuthenticationError(_ error: Error) -> Bool {
-        if let urlError = error as? URLError {
-            return urlError.code == .userAuthenticationRequired
-        }
-        if let libError = error as? LibreLinkUpError {
-            return libError.isAuthenticationRelated
-        }
-        return false
+        if !hasStoredCredentials || !isOnline { return 60 }
+        if failureCount > 0 { return min(900, 30 * pow(2, Double(min(failureCount - 1, 5)))) }
+        return ProcessInfo.processInfo.isLowPowerModeEnabled ? 300 : (dataSource == .nightscout ? 300 : 60)
     }
 
     private var lastKnownReadingDate: Date? {
@@ -1236,7 +1130,7 @@ final class LibreLinkUpService: ObservableObject {
     }
 
     private var displayTrendArrow: Int? {
-        currentReading?.trendArrow ?? readingHistory.last(where: { $0.trendArrow != nil })?.trendArrow
+        currentReading?.trendArrow
     }
 
     private var fixedGraphBounds: (min: Double, max: Double) {
@@ -1304,7 +1198,7 @@ final class LibreLinkUpService: ObservableObject {
     }
 
     private func loadNightscoutTokenFromKeychain() {
-        for key in Self.nightscoutTokenKeyCandidates {
+        for key in (UserDefaults.standard.bool(forKey: "GlucoBar.ignoreLegacyCredentials") ? Array(Self.nightscoutTokenKeyCandidates.prefix(1)) : Self.nightscoutTokenKeyCandidates) {
             if let value = KeychainHelper.load(key: key) {
                 nightscoutToken = value
                 break
@@ -1313,62 +1207,220 @@ final class LibreLinkUpService: ObservableObject {
     }
 
     private func persistNightscoutToken() {
-        guard !nightscoutToken.isEmpty else { return }
+        guard dataSource == .nightscout else { return }
+        guard !nightscoutToken.isEmpty else {
+            KeychainHelper.delete(key: Self.nightscoutTokenKeyCandidates[0])
+            return
+        }
         KeychainHelper.save(key: Self.nightscoutTokenKeyCandidates[0], value: nightscoutToken)
     }
 
-    private func fetchNightscout() async {
-        guard !nightscoutBaseURL.isEmpty else {
-            errorMessage = "Open Settings and enter your Nightscout URL."
-            currentReading = nil
-            return
+    private var personPreferenceKey: String { "GlucoBar.person." + ProfileIdentity.key(source: "libreLinkUp", account: email) }
+    var activePersonName: String? { selectedConnection?.displayName }
+    var hasActiveProfile: Bool { historyRepository.profileID != nil }
+    var crossingSummaries: [ForecastEvaluation.Summary] { forecastEngine.evaluation.summaries(now: statusTick) }
+
+    var forecastStatusText: String {
+        if !predictionEnabled { return "Forecast is turned off" }
+        if currentReading == nil { return "Forecast waiting for readings" }
+        if let date = currentReading?.timestamp, statusTick.timeIntervalSince(date) > 12 * 60 {
+            return "Forecast paused — readings are delayed"
         }
+        if activePrediction == nil { return "Forecast needs more continuous recent readings" }
+        let count = forecastAccuracyRows.first(where: { $0.model == "ensemble" })?.countsByHorizon[30] ?? 0
+        if count < 30 { return "Learning · limited forecast history" }
+        if let error = forecastAccuracyRows.first(where: { $0.model == "ensemble" })?.maeByHorizon[30] {
+            return "30m mean error \(formattedValue(for: error)) \(displayUnitLabel) · \(count) checks"
+        }
+        return "Learning · limited forecast history"
+    }
 
-        isLoading = true
-        defer { isLoading = false }
+    var retryText: String? {
+        guard isOnline, let nextRefreshAt, errorMessage != nil else { return nil }
+        return "Retry in \(max(0, Int(ceil(nextRefreshAt.timeIntervalSince(statusTick)))))s"
+    }
 
+    private func activateProfile(_ id: String?) {
+        switchingProfile = true
+        defer { switchingProfile = false }
+        prediction = nil
+        backtestResult = nil
+        backtestProgress = nil
+        typicalDayCache = nil
+        let cached = historyRepository.select(id)
+        forecastEngine.select(learningKey: id == nil ? nil : historyRepository.learningKey)
+        notifier.selectProfile(id)
+        currentReading = nil
+        readingHistory = Self.trimmedHistory(cached)
+        currentReading = readingHistory.last
+        lastUpdated = currentReading?.timestamp
+        historyStore.prune(retentionDays: historyRetentionDays)
+    }
+
+    private func restoreActiveProfile() {
+        if dataSource == .nightscout, !nightscoutBaseURL.isEmpty {
+            activateProfile(ProfileIdentity.key(source: "nightscout", account: ProfileIdentity.nightscoutAccount(nightscoutBaseURL)))
+        } else if dataSource == .libreLinkUp, !email.isEmpty, let selectedPersonID {
+            activateProfile(ProfileIdentity.key(source: "libreLinkUp", account: email, person: selectedPersonID))
+        }
+    }
+
+    private func resetConnection() {
+        requestGeneration = UUID()
+        connectionManager.reset()
+        isLoading = false
+        isAuthenticated = false
+        selectedConnection = nil
+        availableConnections = []
+        errorMessage = nil
+        connectionIssue = nil
+        failureCount = 0
+        recoveryRequested = false
+        activateProfile(nil)
+        selectedPersonID = UserDefaults.standard.string(forKey: personPreferenceKey)
+        startRefreshLoop()
+    }
+
+    func connect(source: DataSource, email: String, password: String, url: String, token: String) async {
+        guard !restoring else { return }
+        dataSource = source
+        if source == .nightscout { customTargetsEnabled = true }
+        self.email = email.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.password = password
+        nightscoutBaseURL = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        nightscoutToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        resetConnection()
+        restoreActiveProfile()
+        await authenticate()
+    }
+
+    func selectPerson(_ id: String) async {
+        guard !id.isEmpty else { return }
+        let connections = availableConnections
+        resetConnection()
+        availableConnections = connections
+        selectedPersonID = id
+        UserDefaults.standard.set(id, forKey: personPreferenceKey)
+        restoreActiveProfile()
+        await fetchGlucose()
+    }
+
+    #if DEBUG
+    /// In-memory fixture for visual QA. No account, local history, or network is accessed.
+    static func preview() -> LibreLinkUpService {
+        let service = LibreLinkUpService(startAutomatically: false)
+        service.email = "demo@example.com"
+        service.password = "demo"
+        service.useMmolPerL = true
+        service.isAuthenticated = true
+        service.customTargetsEnabled = true
+        let end = Date(timeIntervalSince1970: floor(Date().timeIntervalSince1970 / 300) * 300)
+        let readings = (0..<(28 * 288)).compactMap { i -> GlucoseReading? in
+            let ago = 28 * 288 - 1 - i
+            // Include a visible recent missing-data interval.
+            if (34...39).contains(ago) { return nil }
+            let date = end.addingTimeInterval(-Double(ago) * 300)
+            let phase = Double(i % 288) / 288 * 2 * Double.pi
+            let value = 115 + 28 * sin(phase) + 20 * sin(phase * 3) + 8 * sin(Double(i) / 5)
+            return GlucoseReading(timestamp: date, valueMgDl: value, trendArrow: ago == 0 ? 4 : nil)
+        }
+        service.historyStore.merge(readings)
+        service.readingHistory = Array(readings.suffix(288))
+        service.currentReading = readings.last
+        service.lastUpdated = end
+        service.prediction = service.predictor.predict(recent: service.readingHistory, history: service.historyStore.samples,
+                                                       typicalDay: service.typicalDayProfile, now: .now)
+        return service
+    }
+    #endif
+
+    private func checkMissingData() {
+        guard hasStoredCredentials, notifyMissingData, isDataStale, let date = lastKnownReadingDate else { return }
+        notifier.missingData(lastReading: date, cooldown: Double(notificationCooldownMinutes) * 60)
+    }
+
+    private func restoreExtraPreferences() {
+        let d = UserDefaults.standard
+        notifyMissingData = d.bool(forKey: "GlucoBar.notifyMissing")
+        menuShowsDelta = d.bool(forKey: "GlucoBar.menuDelta")
+        menuShowsAge = d.bool(forKey: "GlucoBar.menuAge")
+        compactMenu = d.bool(forKey: "GlucoBar.compactMenu")
+        privacyMode = d.bool(forKey: "GlucoBar.privacyMode")
+    }
+
+    private func saveExtraPreferences() {
+        guard !restoring else { return }
+        let d = UserDefaults.standard
+        d.set(notifyMissingData, forKey: "GlucoBar.notifyMissing")
+        d.set(menuShowsDelta, forKey: "GlucoBar.menuDelta")
+        d.set(menuShowsAge, forKey: "GlucoBar.menuAge")
+        d.set(compactMenu, forKey: "GlucoBar.compactMenu")
+        d.set(privacyMode, forKey: "GlucoBar.privacyMode")
+    }
+
+    func deleteStoredHistory() {
+        // Invalidating in-flight work prevents deleted data from being written back by an old response.
+        requestGeneration = UUID()
+        connectionManager.reset()
+        isLoading = false
+        forecastEngine.reset()
+        historyRepository.deleteCurrent()
+        prediction = nil
+        backtestResult = nil
+        backtestProgress = nil
+        typicalDayCache = nil
+        readingHistory = []
+        currentReading = nil
+        lastUpdated = nil
+        startRefreshLoop()
+        dataMessage = "History and forecast learning deleted for this profile. New readings will be stored on the next refresh."
+    }
+
+    func forgetCredentials() {
+        // Only remove GlucoBar's keys; generic legacy aliases may belong to another application.
+        let keys = [Self.emailKeyCandidates[0], Self.passwordKeyCandidates[0], Self.nightscoutTokenKeyCandidates[0]]
+        let deleted = keys.map { KeychainHelper.delete(key: $0) }.allSatisfy { $0 }
+        UserDefaults.standard.set(true, forKey: "GlucoBar.ignoreLegacyCredentials")
+        email = ""
+        password = ""
+        nightscoutBaseURL = ""
+        nightscoutToken = ""
+        resetConnection()
+        dataMessage = deleted ? "Credentials removed. Stored history is retained separately." : "Some Keychain items could not be removed. Check Keychain Access."
+    }
+
+    var hasLegacyHistory: Bool { !restoring && !GlucoseHistoryRepository.legacySamples.isEmpty }
+
+    func importLegacyHistory() {
+        guard hasActiveProfile else { return }
+        let samples = GlucoseHistoryRepository.legacySamples
+        historyStore.merge(samples.map { GlucoseReading(timestamp: $0.date, valueMgDl: $0.v) })
+        historyStore.prune(retentionDays: historyRetentionDays)
+        historyStore.saveNow()
+        resetForecastLearning()
+        typicalDayCache = nil
+        objectWillChange.send()
+        dataMessage = "Older history copied into the selected profile. The unassigned copy remains until you delete it."
+    }
+
+    func deleteLegacyHistory() {
         do {
-            let sampleInterval: TimeInterval = 5 * 60 // 5 minutes typical NS interval
-            let desiredCount = max(24, Int(graphWindowInterval / sampleInterval) + 12) // pad a bit
-            let entries = try await nightscoutAPI.fetchEntries(
-                baseURL: nightscoutBaseURL,
-                token: nightscoutToken.isEmpty ? nil : nightscoutToken,
-                count: desiredCount
-            )
-            let readings = entries.compactMap { entry -> GlucoseReading? in
-                guard let date = entry.date, let sgv = entry.sgv else { return nil }
-                return GlucoseReading(
-                    timestamp: date,
-                    valueMgDl: sgv,
-                    trendArrow: mapNightscoutDirection(entry.direction),
-                    factoryTimestamp: nil
-                )
-            }
-            readingHistory = Self.trimmedHistory(Self.merge(readings: readingHistory + readings, with: nil))
-            currentReading = readingHistory.last
-            lastUpdated = currentReading?.timestamp ?? readingHistory.last?.timestamp
-            errorMessage = nil
-            isAuthenticated = true
-            persistGraphCache()
-            persistNightscoutToken()
-        } catch {
-            errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-        }
+            try GlucoseHistoryRepository.deleteLegacy()
+            dataMessage = "Unassigned history and old forecast learning deleted."
+        } catch { dataMessage = "Could not delete unassigned history: " + error.localizedDescription }
     }
 
-    private func mapNightscoutDirection(_ direction: String?) -> Int? {
-        guard let d = direction?.lowercased() else { return nil }
-        switch d {
-        case "doubledown": return 1
-        case "singledown": return 1
-        case "fortyfivedown": return 2
-        case "flat": return 3
-        case "fortyfiveup": return 4
-        case "singleup": return 5
-        case "doubleup": return 6
-        default: return nil
-        }
+    func exportHistory(legacy: Bool = false) {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = legacy ? "GlucoBar-unassigned-history.csv" : "GlucoBar-history.csv"
+        panel.allowedContentTypes = [.commaSeparatedText]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try GlucoseHistoryRepository.csv(samples: legacy ? GlucoseHistoryRepository.legacySamples : historyStore.samples).write(to: url, atomically: true, encoding: .utf8)
+            dataMessage = "History exported with UTC timestamps and both glucose units."
+        } catch { dataMessage = "Export failed: " + error.localizedDescription }
     }
+
 }
 
 enum ConnectionState: Equatable {

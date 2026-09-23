@@ -86,6 +86,20 @@ nonisolated struct PeriodStats: Equatable {
 }
 
 nonisolated enum GlucoseAnalytics {
+    struct ComparisonRanges {
+        let currentStart: Date
+        let currentEnd: Date
+        let previousStart: Date
+        let previousEnd: Date
+    }
+
+    static func comparisonRanges(days: Int, now: Date, calendar: Calendar = .current) -> ComparisonRanges {
+        let start = days == 0 ? calendar.startOfDay(for: now) : (calendar.date(byAdding: .day, value: -days, to: now) ?? now)
+        let previousEnd = days == 0 ? (calendar.date(byAdding: .day, value: -1, to: now) ?? start) : start
+        let previousStart = days == 0 ? calendar.startOfDay(for: previousEnd) : (calendar.date(byAdding: .day, value: -days, to: start) ?? start)
+        return ComparisonRanges(currentStart: start, currentEnd: now, previousStart: previousStart, previousEnd: previousEnd)
+    }
+
     /// A trailing moving average of the readings over `window` seconds.
     static func movingAverage(_ readings: [GlucoseReading], window: TimeInterval) -> [AveragedPoint] {
         let sorted = readings.sorted { $0.timestamp < $1.timestamp }
@@ -98,6 +112,11 @@ nonisolated enum GlucoseAnalytics {
         var count = 0
 
         for (index, reading) in sorted.enumerated() {
+            if index > 0, reading.timestamp.timeIntervalSince(sorted[index - 1].timestamp) > ReadingSupport.maximumGap {
+                start = index
+                sum = 0
+                count = 0
+            }
             sum += reading.valueMgDl
             count += 1
             while start < index, sorted[start].timestamp < reading.timestamp.addingTimeInterval(-window) {
@@ -159,7 +178,7 @@ nonisolated enum GlucoseAnalytics {
     ) -> PeriodStats? {
         let startKey = Int(start.timeIntervalSince1970)
         let endKey = Int(end.timeIntervalSince1970)
-        let values = samples.lazy.filter { $0.t >= startKey && $0.t <= endKey }.map(\.v)
+        let values = samples.lazy.filter { $0.t >= startKey && $0.t < endKey }.map(\.v)
         let count = values.count
         guard count > 0 else { return nil }
 

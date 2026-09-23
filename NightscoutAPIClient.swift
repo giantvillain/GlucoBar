@@ -31,7 +31,13 @@ public struct NightscoutEntry: Decodable {
             self.date = Date(timeIntervalSince1970: doubleMs / 1000)
         } else if let dateString = try? container.decode(String.self, forKey: .dateString) {
             let formatter = ISO8601DateFormatter()
-            self.date = formatter.date(from: dateString)
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            if let parsed = formatter.date(from: dateString) {
+                self.date = parsed
+            } else {
+                formatter.formatOptions = [.withInternetDateTime]
+                self.date = formatter.date(from: dateString)
+            }
         } else {
             self.date = nil
         }
@@ -75,7 +81,10 @@ public final class NightscoutAPIClient {
             urlString = "https://" + trimmed
         }
         
-        guard var components = URLComponents(string: urlString) else {
+        guard var components = URLComponents(string: urlString),
+              let host = components.host, !host.isEmpty,
+              ["http", "https"].contains(components.scheme?.lowercased() ?? ""),
+              components.user == nil, components.password == nil else {
             throw NightscoutAPIError.invalidBaseURL
         }
         
@@ -98,7 +107,7 @@ public final class NightscoutAPIClient {
             throw NightscoutAPIError.invalidBaseURL
         }
         
-        var request = URLRequest(url: url)
+        var request = URLRequest(url: url, timeoutInterval: 30)
         request.httpMethod = "GET"
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         

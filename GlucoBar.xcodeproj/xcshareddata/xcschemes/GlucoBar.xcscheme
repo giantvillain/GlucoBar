@@ -29,6 +29,11 @@
       selectedLauncherIdentifier = "Xcode.DebuggerFoundation.Launcher.LLDB"
       shouldUseLaunchSchemeArgsEnv = "YES"
       shouldAutocreateTestPlan = "YES">
+      <Testables>
+         <TestableReference skipped="NO" parallelizable="NO">
+            <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="C0DEC0DE00000000000000CC" BuildableName="GlucoBarTests.xctest" BlueprintName="GlucoBarTests" ReferencedContainer="container:GlucoBar.xcodeproj" />
+         </TestableReference>
+      </Testables>
    </TestAction>
    <LaunchAction
       buildConfiguration = "Release"

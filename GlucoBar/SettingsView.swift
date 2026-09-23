@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 struct SettingsView: View {
     @EnvironmentObject var service: LibreLinkUpService
@@ -18,31 +19,96 @@ struct SettingsView: View {
     @State private var customLowThreshold = 70.0
     @State private var customHighThreshold = 180.0
 
+    @State private var confirmDelete = false
+    @State private var confirmForget = false
+    @State private var confirmLegacyImport = false
+    @State private var confirmLegacyDelete = false
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            header
+        VStack(alignment: .leading, spacing: 12) {
             statusStrip
-
-            HStack(alignment: .top, spacing: 14) {
-                VStack(alignment: .leading, spacing: 12) {
-                    sourceSection
-                    displaySection
+            if service.privacyMode {
+                VStack(spacing: 16) {
+                    Label("Readings hidden", systemImage: "eye.slash").font(.title2)
+                    Text("Turn off privacy mode to view settings and glucose details.")
+                    Toggle("Privacy mode", isOn: $service.privacyMode).fixedSize()
+                }.frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                TabView {
+                    settingsPage {
+                        sourceSection
+                        if selectedSource == .libreLinkUp, !service.availableConnections.isEmpty {
+                            SettingsPanel("Person") {
+                                Picker("Show readings for", selection: Binding(
+                                    get: { service.selectedPersonID ?? "" },
+                                    set: { id in Task { await service.selectPerson(id) } }
+                                )) {
+                                    Text("Choose a person…").tag("")
+                                    ForEach(service.availableConnections, id: \.id) { connection in
+                                        Text(connection.displayName).tag(connection.patientId ?? connection.id)
+                                    }
+                                }
+                                .disabled(service.isLoading)
+                                Text("Each person has separate history and forecast learning.")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                        actionRow
+                        startupSection
+                    }.tabItem { Label("Connection", systemImage: "network") }
+                    settingsPage {
+                        menuAppearanceSection
+                        displaySection
+                        thresholdsSection
+                        insightsSection
+                    }.tabItem { Label("Appearance", systemImage: "menubar.rectangle") }
+                    settingsPage { alertsSection }
+                        .tabItem { Label("Alerts", systemImage: "bell") }
+                    settingsPage {
+                        SettingsPanel("Forecast learning") {
+                            Text(service.forecastStatusText).font(.headline)
+                            Text(forecastDescription).font(.caption).foregroundStyle(.secondary)
+                            Button("Reset forecast learning") { service.resetForecastLearning() }
+                            forecastAccuracySection
+                            crossingAccuracySection
+                            backtestSection
+                        }
+                    }.tabItem { Label("Advanced", systemImage: "slider.horizontal.3") }
+                    settingsPage { dataSection }
+                        .tabItem { Label("Data", systemImage: "externaldrive") }
                 }
-                .frame(maxWidth: .infinity, alignment: .top)
-
-                VStack(alignment: .leading, spacing: 12) {
-                    thresholdsSection
-                    startupSection
-                }
-                .frame(maxWidth: .infinity, alignment: .top)
             }
-
-            insightsSection
-
-            actionRow
+            Text("Appearance and alert preferences save automatically. Use Connect after changing account details.")
+                .font(.caption).foregroundStyle(.secondary)
         }
         .padding(20)
-        .frame(width: 660, alignment: .topLeading)
+        .frame(width: 700, height: 610)
+        .alert("Delete this profile’s history?", isPresented: $confirmDelete) {
+            Button("Delete history", role: .destructive) { service.deleteStoredHistory() }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("This deletes local readings and forecast learning for the active profile. New readings will be stored after the next refresh.")
+        }
+        .alert("Forget saved credentials?", isPresented: $confirmForget) {
+            Button("Forget credentials", role: .destructive) { service.forgetCredentials(); loadSettings() }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("GlucoBar will disconnect and remove its saved login and token. Stored history remains on this Mac.")
+        }
+        .alert("Assign older history to this profile?", isPresented: $confirmLegacyImport) {
+            Button("Import history") { service.importLegacyHistory() }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("Only continue if the unassigned readings belong to the currently selected person and account. Older versions did not record that identity.")
+        }
+        .alert("Delete unassigned history?", isPresented: $confirmLegacyDelete) {
+            Button("Delete", role: .destructive) { service.deleteLegacyHistory() }
+            Button("Cancel", role: .cancel) { }
+        } message: { Text("This removes the older unassigned copy and its old forecast learning. Current profile history is kept.") }
+        .task { await service.notifier.refreshAuthorization() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            Task { await service.notifier.refreshAuthorization() }
+        }
         .onAppear(perform: loadSettings)
         .onChange(of: service.graphWindowHours) { _, newValue in
             if Int(graphWindowHours.rounded()) != newValue {
@@ -53,6 +119,112 @@ struct SettingsView: View {
             if graphAxisMode != newValue {
                 graphAxisMode = newValue
             }
+        }
+    }
+
+    private func settingsPage<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14, content: content)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(14)
+        }
+    }
+
+    private var menuAppearanceSection: some View {
+        SettingsPanel("Menu bar") {
+            Toggle("Show change since the previous reading", isOn: $service.menuShowsDelta)
+            Toggle("Show reading age", isOn: $service.menuShowsAge)
+            Toggle("Use compact spacing", isOn: $service.compactMenu)
+            Toggle("Privacy mode", isOn: $service.privacyMode)
+            Text("Privacy mode hides glucose values in the menu bar, app windows and new notifications while sharing your screen.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private var alertsSection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            SettingsPanel("macOS permission") {
+                Label(service.notifier.permissionText, systemImage: service.notifier.authorized ? "bell.badge" : "bell.slash")
+                HStack {
+                    Button("Allow notifications") { service.notifier.requestAuthorizationIfNeeded() }
+                    Button("Test notification") { service.notifier.testNotification() }
+                        .disabled(!service.notifier.authorized)
+                    Button("macOS settings") {
+                        if let url = URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension") { NSWorkspace.shared.open(url) }
+                    }
+                }
+                if let error = service.notifier.lastError { Text(error).foregroundStyle(.red) }
+            }
+            SettingsPanel("Alerts") {
+                Toggle("Notify on predicted low", isOn: $service.notifyPredictedLow)
+                Toggle("Notify on predicted high", isOn: $service.notifyPredictedHigh)
+                Toggle("Notify when readings are more than 15 minutes old", isOn: $service.notifyMissingData)
+                if !service.predictionEnabled && (service.notifyPredictedLow || service.notifyPredictedHigh) {
+                    Text("Turn on Show forecast in Appearance to receive predicted glucose alerts.").font(.caption).foregroundStyle(.orange)
+                }
+                Picker("Repeat each alert type at most every", selection: $service.notificationCooldownMinutes) {
+                    ForEach(LibreLinkUpService.notificationCooldownOptions, id: \.self) { Text("\($0) minutes").tag($0) }
+                }
+                Text("Forecast alerts use your selected horizon and thresholds. Alerts require GlucoBar to be running and your Mac to be awake.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            SettingsPanel("Snooze all alerts") {
+                HStack {
+                    ForEach([15, 30, 60], id: \.self) { minutes in
+                        Button("\(minutes) minutes") { service.notifier.snooze(minutes: minutes) }
+                    }
+                    Button("Resume now") { service.notifier.snooze(minutes: 0) }
+                }
+                if let until = service.notifier.snoozedUntil, until > service.statusTick {
+                    Text("Snoozed until \(until.formatted(date: .omitted, time: .shortened))").foregroundStyle(.secondary)
+                } else { Text("Alerts are not snoozed").foregroundStyle(.secondary) }
+            }
+        }
+    }
+
+    @ViewBuilder private var crossingAccuracySection: some View {
+        Divider()
+        Text("Crossing predictions · last 7 days").font(.caption.weight(.semibold))
+        if service.crossingSummaries.isEmpty {
+            Text("Waiting for complete forecast windows to evaluate crossings.").font(.caption).foregroundStyle(.secondary)
+        }
+        ForEach(service.crossingSummaries, id: \.kind) { summary in
+            VStack(alignment: .leading, spacing: 4) {
+                Text("\(summary.kind): \(summary.detected) detected · \(summary.missed) missed · \(summary.falseWarnings) false warnings")
+                Text("\(summary.windows) evaluated windows · mean lead \(summary.meanLeadMinutes.map { String(format: "%.0f min", $0) } ?? "—")")
+                    .foregroundStyle(.secondary)
+            }.font(.caption)
+        }
+        Text("Counts describe overlapping forecast windows starting in range, not independent events or delivered notifications. Windows with missing readings are excluded. Thresholds and horizons are captured when each forecast is made.")
+            .font(.caption).foregroundStyle(.secondary)
+    }
+
+    private var dataSection: some View {
+        SettingsPanel("Local history") {
+            Text("\(service.storedHistoryDays) days stored for the active profile")
+            Picker("Keep history", selection: $service.historyRetentionDays) {
+                ForEach(LibreLinkUpService.historyRetentionOptions, id: \.self) { Text("\($0) days").tag($0) }
+            }
+            Text("Readings are stored in five-minute bins on this Mac. Each source, account and selected person has separate history and forecast learning. Credentials are stored in Keychain. Exports contain health data.")
+                .font(.caption).foregroundStyle(.secondary)
+            HStack {
+                Button("Export CSV…") { service.exportHistory() }.disabled(service.historyStore.isEmpty)
+                Button("Delete stored history…", role: .destructive) { confirmDelete = true }.disabled(!service.hasActiveProfile)
+            }
+            if service.hasLegacyHistory {
+                Divider()
+                Text("Unassigned history from an older version").font(.headline)
+                Text("Older readings are kept separately because their account and person were not recorded. Import them only after checking who they belong to.")
+                    .font(.caption).foregroundStyle(.secondary)
+                HStack {
+                    Button("Export older history…") { service.exportHistory(legacy: true) }
+                    Button("Import into this profile…") { confirmLegacyImport = true }.disabled(!service.hasActiveProfile)
+                    Button("Delete older history…", role: .destructive) { confirmLegacyDelete = true }
+                }
+            }
+            Divider()
+            Button("Forget credentials…", role: .destructive) { confirmForget = true }
+            if let message = service.dataMessage { Text(message).font(.caption).foregroundStyle(.secondary) }
         }
     }
 
@@ -70,6 +242,7 @@ struct SettingsView: View {
                 .frame(width: 16)
 
             Text(statusLine)
+                .help(statusLine)
                 .font(.callout.weight(.semibold))
                 .lineLimit(1)
 
@@ -92,13 +265,7 @@ struct SettingsView: View {
                     }
                 }
                 .pickerStyle(.segmented)
-                .onChange(of: selectedSource) { _, newValue in
-                    service.dataSource = newValue
-                    if newValue == .nightscout {
-                        service.customTargetsEnabled = true
-                        customTargetsEnabled = true
-                    }
-                }
+
             }
 
             if selectedSource == .libreLinkUp {
@@ -233,7 +400,7 @@ struct SettingsView: View {
                 }
             }
         }
-        .frame(height: 214, alignment: .top)
+
     }
 
     private var startupSection: some View {
@@ -297,55 +464,26 @@ struct SettingsView: View {
 
                 GridRow {
                     Toggle("Show trends in menu", isOn: $service.trendsEnabled)
-                    Picker("Keep history", selection: $service.historyRetentionDays) {
-                        ForEach(LibreLinkUpService.historyRetentionOptions, id: \.self) { days in
-                            Text("Keep \(days) days").tag(days)
-                        }
-                    }
-                    .labelsHidden()
-                    .frame(width: 120)
-                    Button("Reset forecast learning") {
-                        service.resetForecastLearning()
-                    }
-                    .controlSize(.small)
                 }
 
-                GridRow {
-                    Toggle("Notify on predicted low", isOn: $service.notifyPredictedLow)
-                    Picker("Cooldown", selection: $service.notificationCooldownMinutes) {
-                        ForEach(LibreLinkUpService.notificationCooldownOptions, id: \.self) { minutes in
-                            Text("At most every \(minutes) min").tag(minutes)
-                        }
-                    }
-                    .labelsHidden()
-                    .frame(width: 170)
-                    .disabled(!service.notifyPredictedLow && !service.notifyPredictedHigh)
-                    Toggle("Notify on predicted high", isOn: $service.notifyPredictedHigh)
-                }
             }
 
-            Text(forecastDescription)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            forecastAccuracySection
-            backtestSection
         }
     }
 
     private struct AccuracyDisplayRow: Identifiable {
         let title: String
         let maeByHorizon: [Int: Double]
+        let counts: [Int: Int]
         var id: String { title }
     }
 
     @ViewBuilder
     private var forecastAccuracySection: some View {
-        let rows = service.forecastAccuracyRows.map { AccuracyDisplayRow(title: $0.title, maeByHorizon: $0.maeByHorizon) }
+        let rows = service.forecastAccuracyRows.map { AccuracyDisplayRow(title: $0.title, maeByHorizon: $0.maeByHorizon, counts: $0.countsByHorizon) }
         if !rows.isEmpty {
             Divider()
-            Text("Forecast accuracy over the last 7 days, mean error in \(service.displayUnitLabel)")
+            Text("Forecast accuracy over the last 7 days, mean error in \(service.displayUnitLabel) · n = checks")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
             accuracyTable(rows: rows, coverage: service.forecastBandCoverage)
@@ -382,11 +520,11 @@ struct SettingsView: View {
         }
 
         if let result = service.backtestResult {
-            Text("Backtest over the last \(result.evaluationDays) days, \(result.forecastCount) forecasts, mean error in \(service.displayUnitLabel)")
+            Text("Backtest over the last \(result.evaluationDays) days, \(result.forecastCount) forecasts, mean error in \(service.displayUnitLabel) · n = checks")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
             accuracyTable(
-                rows: result.rows.map { AccuracyDisplayRow(title: $0.title, maeByHorizon: $0.maeByHorizon) },
+                rows: result.rows.map { AccuracyDisplayRow(title: $0.title, maeByHorizon: $0.maeByHorizon, counts: $0.countsByHorizon) },
                 coverage: result.bandCoverageByHorizon
             )
         }
@@ -407,9 +545,9 @@ struct SettingsView: View {
                     Text(row.title)
                         .font(.caption)
                         .fontWeight(row.title.hasPrefix("Forecast") ? .semibold : .regular)
-                    accuracyCell(row.maeByHorizon[15].map { service.formattedValue(for: $0) })
-                    accuracyCell(row.maeByHorizon[30].map { service.formattedValue(for: $0) })
-                    accuracyCell(row.maeByHorizon[60].map { service.formattedValue(for: $0) })
+                    accuracyCell(row.maeByHorizon[15].map { service.formattedValue(for: $0) + " · n=\(row.counts[15] ?? 0)" })
+                    accuracyCell(row.maeByHorizon[30].map { service.formattedValue(for: $0) + " · n=\(row.counts[30] ?? 0)" })
+                    accuracyCell(row.maeByHorizon[60].map { service.formattedValue(for: $0) + " · n=\(row.counts[60] ?? 0)" })
                 }
             }
             if !coverage.isEmpty {
@@ -443,7 +581,7 @@ struct SettingsView: View {
         let learned = service.forecastLearnedCount
         let learning = learned == 0
             ? "It has not scored any forecasts yet."
-            : "It has scored \(learned) forecasts against real readings so far."
+            : "It has checked \(learned) predicted horizon values against real readings so far."
         var text = "The forecast blends a trend fit, a momentum fit, the sensor's trend arrow, matches against your own history, a regression trained on that history and your typical-day drift. It scores every forecast against what actually happened, learns each model's error and bias by regime, and adapts the blend and the band. \(learning) \(service.forecastRegressionSummary)"
         if let blend = service.forecastBlendSummary {
             text += " \(blend)"
@@ -504,7 +642,7 @@ struct SettingsView: View {
                     .controlSize(.small)
             }
 
-            Button("Save and Connect") { connect() }
+            Button("Connect") { connect() }
                 .buttonStyle(.borderedProminent)
                 .disabled(!canConnect)
         }
@@ -548,7 +686,7 @@ struct SettingsView: View {
 
     private var statusLine: String {
         if let statusDetail, !statusDetail.isEmpty {
-            return "\(statusTitle) • \(statusDetail)"
+            return [service.connectionIssue ?? statusTitle, statusDetail, service.retryText].compactMap { $0 }.joined(separator: " • ")
         }
         return statusTitle
     }
@@ -607,15 +745,9 @@ struct SettingsView: View {
 
     private func connect() {
         guard canConnect else { return }
-        service.dataSource = selectedSource
-        if selectedSource == .libreLinkUp {
-            service.email = email
-            service.password = password
-            Task { await service.authenticate() }
-        } else {
-            service.nightscoutBaseURL = nightscoutBaseURL
-            service.nightscoutToken = nightscoutToken
-            Task { await service.fetchGlucose() }
+        Task {
+            await service.connect(source: selectedSource, email: email, password: password,
+                                  url: nightscoutBaseURL, token: nightscoutToken)
         }
     }
 

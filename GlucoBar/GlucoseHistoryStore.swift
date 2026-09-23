@@ -23,12 +23,13 @@ final class GlucoseHistoryStore {
     private var sortedCache: [HistorySample]?
     private var saveTask: Task<Void, Never>?
     private let fileURL: URL?
+    private var terminationObserver: NSObjectProtocol?
 
     init(fileURL: URL? = GlucoseHistoryStore.defaultFileURL()) {
         self.fileURL = fileURL
         load()
 
-        NotificationCenter.default.addObserver(
+        terminationObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification,
             object: nil,
             queue: .main
@@ -37,6 +38,11 @@ final class GlucoseHistoryStore {
                 self?.saveNow()
             }
         }
+    }
+
+    deinit {
+        saveTask?.cancel()
+        if let terminationObserver { NotificationCenter.default.removeObserver(terminationObserver) }
     }
 
     /// All samples ordered by time, one per five-minute bin.
@@ -130,6 +136,7 @@ final class GlucoseHistoryStore {
     }
 
     private func scheduleSave() {
+        guard fileURL != nil else { return }
         saveTask?.cancel()
         saveTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 20 * 1_000_000_000)

@@ -385,36 +385,36 @@ enum LibreLinkUpError: LocalizedError {
 
 private extension KeyedDecodingContainer {
     func decodeDateIfPresent(forKey key: Key) throws -> Date? {
-        if let string = try decodeIfPresent(String.self, forKey: key) {
+        if let string = try? decodeIfPresent(String.self, forKey: key) {
             return LibreLinkUpDates.parse(string)
         }
-        if let seconds = try decodeIfPresent(TimeInterval.self, forKey: key) {
+        if let seconds = try? decodeIfPresent(TimeInterval.self, forKey: key) {
             return Date(timeIntervalSince1970: seconds)
         }
         return nil
     }
 
     func decodeIntIfPresent(forKey key: Key) throws -> Int? {
-        if let value = try decodeIfPresent(Int.self, forKey: key) {
+        if let value = try? decodeIfPresent(Int.self, forKey: key) {
             return value
         }
-        if let value = try decodeIfPresent(Double.self, forKey: key) {
+        if let value = try? decodeIfPresent(Double.self, forKey: key) {
             return Int(value.rounded())
         }
-        if let string = try decodeIfPresent(String.self, forKey: key) {
+        if let string = try? decodeIfPresent(String.self, forKey: key) {
             return Int(string)
         }
         return nil
     }
 
     func decodeDoubleIfPresent(forKey key: Key) throws -> Double? {
-        if let value = try decodeIfPresent(Double.self, forKey: key) {
+        if let value = try? decodeIfPresent(Double.self, forKey: key) {
             return value
         }
-        if let value = try decodeIfPresent(Int.self, forKey: key) {
+        if let value = try? decodeIfPresent(Int.self, forKey: key) {
             return Double(value)
         }
-        if let string = try decodeIfPresent(String.self, forKey: key) {
+        if let string = try? decodeIfPresent(String.self, forKey: key) {
             return Double(string)
         }
         return nil

@@ -123,6 +123,7 @@ nonisolated final class GlucosePredictor {
         /// Mean absolute error in mg/dL by horizon.
         let maeByHorizon: [Int: Double]
         let count: Int
+        let countsByHorizon: [Int: Int]
     }
 
     // MARK: Learned state
@@ -186,7 +187,7 @@ nonisolated final class GlucosePredictor {
 
     private let persists: Bool
     private let dailyLogLimit: Int
-    private let defaultsKey = "GlucoBarPredictorLearningV2"
+    private let defaultsKey: String
     private var lastSave: Date = .distantPast
     private var dirty = false
 
@@ -225,7 +226,8 @@ nonisolated final class GlucosePredictor {
         return formatter
     }()
 
-    init(persists: Bool = true, dailyLogLimit: Int = 8) {
+    init(persists: Bool = true, dailyLogLimit: Int = 8, defaultsKey: String = "GlucoBarPredictorLearningV2") {
+        self.defaultsKey = defaultsKey
         self.persists = persists
         self.dailyLogLimit = dailyLogLimit
         if persists {
@@ -257,7 +259,7 @@ nonisolated final class GlucosePredictor {
         typicalDay: TypicalDayProfile?,
         now: Date
     ) -> GlucosePrediction? {
-        let readings = recent.sorted { $0.timestamp < $1.timestamp }
+        let readings = ReadingSupport.segments(recent).last ?? []
         guard let last = readings.last else { return nil }
         guard now.timeIntervalSince(last.timestamp) <= 12 * 60 else { return nil }
 
@@ -433,13 +435,15 @@ nonisolated final class GlucosePredictor {
         for model in order {
             var mae: [Int: Double] = [:]
             var count = 0
+            var counts: [Int: Int] = [:]
             for horizon in Self.displayHorizons {
                 guard let cell = cells["\(model)|\(horizon)"], cell.count >= 10 else { continue }
                 mae[horizon] = cell.sum / Double(cell.count)
+                counts[horizon] = cell.count
                 count = max(count, cell.count)
             }
             guard !mae.isEmpty else { continue }
-            rows.append(AccuracyRow(model: model, title: Self.title(forModel: model), maeByHorizon: mae, count: count))
+            rows.append(AccuracyRow(model: model, title: Self.title(forModel: model), maeByHorizon: mae, count: count, countsByHorizon: counts))
         }
         return rows
     }
@@ -655,7 +659,8 @@ nonisolated final class GlucosePredictor {
         case 3: return ArrowRate(center: 0, lower: -1, upper: 1)
         case 4: return ArrowRate(center: 1.5, lower: 1, upper: 2)
         case 5: return ArrowRate(center: 2.5, lower: 2, upper: 4)
-        case 6...: return ArrowRate(center: 3.5, lower: 3, upper: 5)
+        case 6: return ArrowRate(center: 3.5, lower: 3, upper: 5)
+        case 7: return ArrowRate(center: -3.5, lower: -5, upper: -3)
         default: return nil
         }
     }
@@ -903,7 +908,8 @@ nonisolated final class GlucosePredictor {
         case let (b?, a?):
             let span = a.timestamp.timeIntervalSince(b.timestamp)
             guard span > 0 else { return b.valueMgDl }
-            guard date.timeIntervalSince(b.timestamp) <= tolerance || a.timestamp.timeIntervalSince(date) <= tolerance else { return nil }
+            guard span <= ReadingSupport.maximumGap,
+                  date.timeIntervalSince(b.timestamp) <= tolerance && a.timestamp.timeIntervalSince(date) <= tolerance else { return nil }
             let fraction = date.timeIntervalSince(b.timestamp) / span
             return b.valueMgDl + (a.valueMgDl - b.valueMgDl) * fraction
         case let (b?, nil):

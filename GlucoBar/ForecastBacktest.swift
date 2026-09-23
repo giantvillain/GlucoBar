@@ -8,6 +8,7 @@ nonisolated struct ForecastBacktestResult: Equatable, Sendable {
         /// Mean absolute error in mg/dL by horizon.
         let maeByHorizon: [Int: Double]
         let count: Int
+        let countsByHorizon: [Int: Int]
     }
 
     let rows: [Row]
@@ -42,6 +43,7 @@ nonisolated enum ForecastBacktest {
         var recentStart = 0
 
         for position in startIndex..<sorted.count {
+            if Task.isCancelled { return nil }
             let sample = sorted[position]
             let dayStart = Int(calendar.startOfDay(for: sample.date).timeIntervalSince1970)
             if currentDay != dayStart {
@@ -64,7 +66,7 @@ nonisolated enum ForecastBacktest {
         progress(1)
 
         let rows = predictor.accuracyRows(days: 10_000).map {
-            ForecastBacktestResult.Row(model: $0.model, title: $0.title, maeByHorizon: $0.maeByHorizon, count: $0.count)
+            ForecastBacktestResult.Row(model: $0.model, title: $0.title, maeByHorizon: $0.maeByHorizon, count: $0.count, countsByHorizon: $0.countsByHorizon)
         }
         guard !rows.isEmpty else { return nil }
         let count = rows.first { $0.model == "ensemble" }?.count ?? 0
